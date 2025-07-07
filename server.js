@@ -1,0 +1,1230 @@
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
+
+// 静态文件服务
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 游戏状态管理
+const rooms = new Map();
+const users = new Map();
+const idlePlayers = new Map(); // 空闲玩家列表
+const spectators = new Map(); // 观战者列表
+
+// 房间状态枚举
+const ROOM_STATUS = {
+    WAITING: 'waiting',
+    CHOOSING: 'choosing', 
+    PLAYING: 'playing',
+    FINISHED: 'finished'
+};
+
+// 用户状态枚举
+const USER_STATUS = {
+    IDLE: 'idle',
+    IN_ROOM: 'in_room',
+    PLAYING: 'playing',
+    SPECTATING: 'spectating'
+};
+
+// 游戏类
+class Game {
+    constructor() {
+        this.board = Array(15).fill().map(() => Array(15).fill(0));
+        this.currentPlayer = 1; // 1为黑子，2为白子
+        this.winner = null;
+        this.moveHistory = [];
+        this.moveCount = 0; // 总手数
+        this.currentMoveTimer = null; // 当前落子计时器
+        this.currentTimerInterval = null; // 计时器间隔
+        this.moveTimeLimit = 60; // 每步60秒限制
+        this.currentTimeLeft = 60; // 当前剩余时间
+        this.timerStartTime = null; // 计时器开始时间
+    }
+
+    makeMove(row, col, player) {
+        if (this.board[row][col] !== 0 || this.winner) {
+            return false;
+        }
+        
+        this.board[row][col] = player;
+        this.moveCount++;
+        this.moveHistory.push({ 
+            row, 
+            col, 
+            player, 
+            moveNumber: this.moveCount,
+            timestamp: new Date()
+        });
+        
+        if (this.checkWin(row, col, player)) {
+            this.winner = player;
+        }
+        
+        this.currentPlayer = player === 1 ? 2 : 1;
+        return true;
+    }
+
+    clearMoveTimer() {
+        if (this.currentMoveTimer) {
+            clearTimeout(this.currentMoveTimer);
+            this.currentMoveTimer = null;
+        }
+        if (this.currentTimerInterval) {
+            clearInterval(this.currentTimerInterval);
+            this.currentTimerInterval = null;
+        }
+        this.currentTimeLeft = this.moveTimeLimit;
+        this.timerStartTime = null;
+    }
+
+    checkWin(row, col, player) {
+        const directions = [
+            [0, 1], [1, 0], [1, 1], [1, -1]
+        ];
+
+        for (let [dx, dy] of directions) {
+            let count = 1;
+            
+            // 检查正方向
+            for (let i = 1; i < 5; i++) {
+                const newRow = row + dx * i;
+                const newCol = col + dy * i;
+                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
+                    this.board[newRow][newCol] !== player) {
+                    break;
+                }
+                count++;
+            }
+            
+            // 检查反方向
+            for (let i = 1; i < 5; i++) {
+                const newRow = row - dx * i;
+                const newCol = col - dy * i;
+                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
+                    this.board[newRow][newCol] !== player) {
+                    break;
+                }
+                count++;
+            }
+            
+            if (count >= 5) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+// 房间类
+class Room {
+    constructor(id) {
+        this.id = id;
+        this.players = [];
+        this.spectators = []; // 观战者列表
+        this.status = ROOM_STATUS.WAITING;
+        this.game = null;
+        this.choiceTimer = null;
+        this.choiceInterval = null; // 存储选择倒计时间隔
+        this.playerRoles = {}; // {socketId: 'black' | 'white'}
+        this.winner = null;
+        this.gameResult = null; // 游戏结果
+        this.hasAI = false; // 是否包含AI玩家
+        this.aiPlayer = null; // AI玩家实例
+    }
+
+    addPlayer(socket, username) {
+        if (this.players.length >= 2) {
+            return false;
+        }
+        
+        this.players.push({ socket, username });
+        
+        // 从空闲列表移除
+        idlePlayers.delete(socket.id);
+        
+        if (this.players.length === 2) {
+            console.log(`房间 ${this.id} 两名玩家已齐，准备开始选择阶段`);
+            // 给前端一点时间处理 joined-room 事件，然后再开始选择阶段
+            setTimeout(() => {
+                this.startChoicePhase();
+            }, 500); // 延迟500ms
+        }
+        
+        this.broadcastRoomUpdate();
+        return true;
+    }
+
+    addSpectator(socket, username) {
+        this.spectators.push({ socket, username });
+        
+        // 向观战者发送当前游戏状态
+        if (this.game && this.status === ROOM_STATUS.PLAYING) {
+            socket.emit('spectate-game', {
+                board: this.game.board,
+                currentPlayer: this.game.currentPlayer,
+                players: this.players.map(p => ({
+                    username: p.username,
+                    role: this.playerRoles[p.socket.id]
+                })),
+                moveHistory: this.game.moveHistory,
+                moveCount: this.game.moveCount
+            });
+            
+            // 如果有正在进行的倒计时，发送当前剩余时间给观战者
+            if (this.game.currentTimerInterval && this.game.currentTimeLeft > 0) {
+                socket.emit('move-timer-start', { timeLeft: this.game.currentTimeLeft });
+            }
+        }
+        
+        this.broadcastRoomUpdate();
+        return true;
+    }
+
+    removePlayer(socket) {
+        const wasPlayer = this.players.some(p => p.socket.id === socket.id);
+        
+        this.players = this.players.filter(p => p.socket.id !== socket.id);
+        this.spectators = this.spectators.filter(s => s.socket.id !== socket.id);
+        
+        // 只有当真正的玩家离开时才处理游戏逻辑
+        if (wasPlayer) {
+            // 清除选择倒计时
+            if (this.choiceTimer) {
+                clearTimeout(this.choiceTimer);
+                this.choiceTimer = null;
+            }
+            if (this.choiceInterval) {
+                clearInterval(this.choiceInterval);
+                this.choiceInterval = null;
+            }
+            
+            // 清除游戏倒计时
+            if (this.game) {
+                this.game.clearMoveTimer();
+            }
+            
+            if (this.players.length === 0) {
+                this.status = ROOM_STATUS.WAITING;
+                this.playerRoles = {};
+            } else if (this.players.length === 1) {
+                if (this.status === ROOM_STATUS.PLAYING) {
+                    // 如果游戏中有玩家离开，对方获胜
+                    const remainingPlayer = this.players[0];
+                    this.endGame(remainingPlayer.socket.id, 'opponent_left');
+                } else if (this.status === ROOM_STATUS.CHOOSING) {
+                    // 如果在选择阶段有玩家离开，重置为等待状态
+                    this.status = ROOM_STATUS.WAITING;
+                    this.playerRoles = {};
+                    
+                    // 通知剩余玩家回到等待状态
+                    this.players.forEach(player => {
+                        player.socket.emit('waiting-for-player');
+                    });
+                }
+            }
+        }
+        
+        this.broadcastRoomUpdate();
+    }
+
+    removeSpectator(socket) {
+        this.spectators = this.spectators.filter(s => s.socket.id !== socket.id);
+        this.broadcastRoomUpdate();
+    }
+
+    broadcastRoomUpdate() {
+        // 向所有人广播房间更新
+        const roomInfo = this.getRoomInfo();
+        io.emit('room-updated', roomInfo);
+    }
+
+    getRoomInfo() {
+        return {
+            id: this.id,
+            status: this.status,
+            playersCount: this.players.length,
+            spectatorsCount: this.spectators.length,
+            players: this.players.map(p => ({ username: p.username })),
+            canJoin: this.players.length < 2,
+            canSpectate: this.status === ROOM_STATUS.PLAYING || this.status === ROOM_STATUS.FINISHED
+        };
+    }
+
+    startChoicePhase() {
+        if (this.players.length < 2) {
+            console.error('Cannot start choice phase: not enough players');
+            this.status = ROOM_STATUS.WAITING;
+            return;
+        }
+        
+        console.log(`房间 ${this.id} 开始选择阶段，玩家数量：${this.players.length}`);
+        this.status = ROOM_STATUS.CHOOSING;
+        
+        // 通知所有玩家进入选择阶段
+        this.players.forEach(p => {
+            if (p.socket.id !== 'ai_player') {
+                console.log(`向玩家 ${p.username} 发送 choice-phase-started 事件`);
+                p.socket.emit('choice-phase-started');
+            }
+        });
+        
+        // 如果有AI玩家，AI随机选择是否先手（50%概率）
+        if (this.hasAI) {
+            const aiWantsFirst = Math.random() < 0.5;
+            setTimeout(() => {
+                if (aiWantsFirst) {
+                    const aiPlayer = this.players.find(p => p.socket.id === 'ai_player');
+                    if (aiPlayer) {
+                        this.playerChooseFirst(aiPlayer.socket);
+                    }
+                }
+                // 如果AI不选择先手，等待人类玩家选择或超时随机分配
+            }, 2000); // AI思考2秒
+        }
+        
+        // 30秒倒计时选择先手
+        let countdown = 30;
+        this.choiceInterval = setInterval(() => {
+            // 检查是否还有足够的玩家
+            if (this.players.length < 2) {
+                clearInterval(this.choiceInterval);
+                this.choiceInterval = null;
+                if (this.choiceTimer) {
+                    clearTimeout(this.choiceTimer);
+                    this.choiceTimer = null;
+                }
+                this.status = ROOM_STATUS.WAITING;
+                this.broadcastRoomUpdate();
+                return;
+            }
+            
+            this.players.forEach(p => {
+                p.socket.emit('choice-countdown', countdown);
+            });
+            countdown--;
+            
+            if (countdown < 0) {
+                clearInterval(this.choiceInterval);
+                this.choiceInterval = null;
+                this.randomAssignRoles();
+            }
+        }, 1000);
+
+        this.choiceTimer = setTimeout(() => {
+            if (this.choiceInterval) {
+                clearInterval(this.choiceInterval);
+                this.choiceInterval = null;
+            }
+            this.randomAssignRoles();
+        }, 30000);
+    }
+
+    playerChooseFirst(socket) {
+        console.log(`玩家 ${socket.id} 选择先手，当前房间状态: ${this.status}`);
+        
+        if (this.status !== ROOM_STATUS.CHOOSING) {
+            console.log(`状态不对，无法选择先手。当前状态: ${this.status}`);
+            return;
+        }
+        
+        if (this.choiceTimer) {
+            clearTimeout(this.choiceTimer);
+            this.choiceTimer = null;
+        }
+        if (this.choiceInterval) {
+            clearInterval(this.choiceInterval);
+            this.choiceInterval = null;
+        }
+        
+        this.playerRoles[socket.id] = 'black';
+        
+        const otherPlayer = this.players.find(p => p.socket.id !== socket.id);
+        if (otherPlayer) {
+            this.playerRoles[otherPlayer.socket.id] = 'white';
+        }
+        
+        console.log(`角色分配完成: ${JSON.stringify(this.playerRoles)}`);
+        this.startGame();
+    }
+
+    randomAssignRoles() {
+        if (this.players.length < 2) {
+            console.error('Not enough players to assign roles, returning to waiting status');
+            this.status = ROOM_STATUS.WAITING;
+            this.broadcastRoomUpdate();
+            return;
+        }
+        
+        const randomIndex = Math.floor(Math.random() * 2);
+        this.playerRoles[this.players[randomIndex].socket.id] = 'black';
+        this.playerRoles[this.players[1 - randomIndex].socket.id] = 'white';
+        
+        this.startGame();
+    }
+
+    startGame() {
+        console.log(`开始游戏，房间ID: ${this.id}`);
+        this.status = ROOM_STATUS.PLAYING;
+        this.game = new Game();
+        
+        // 如果有AI玩家，创建AI实例
+        if (this.hasAI) {
+            const aiRole = this.playerRoles['ai_player']; // 'black' or 'white'
+            const aiPlayerNumber = aiRole === 'black' ? 1 : 2;
+            this.aiPlayer = new AIPlayer(this.game, aiPlayerNumber);
+            console.log(`AI玩家创建完成，角色: ${aiRole} (${aiPlayerNumber})`);
+        }
+        
+        this.players.forEach(player => {
+            const role = this.playerRoles[player.socket.id];
+            if (player.socket.id !== 'ai_player') {
+                console.log(`发送game-start事件给玩家 ${player.username}, 角色: ${role}`);
+                player.socket.emit('game-start', {
+                    role: role,
+                    isYourTurn: role === 'black',
+                    players: this.players.map(p => ({
+                        username: p.username,
+                        role: this.playerRoles[p.socket.id]
+                    }))
+                });
+            }
+        });
+        
+        // 通知观战者游戏开始
+        this.spectators.forEach(spectator => {
+            spectator.socket.emit('spectate-game', {
+                board: this.game.board,
+                currentPlayer: this.game.currentPlayer,
+                players: this.players.map(p => ({
+                    username: p.username,
+                    role: this.playerRoles[p.socket.id]
+                })),
+                moveHistory: [],
+                moveCount: 0
+            });
+        });
+        
+        // 开始第一步倒计时（黑子先手）
+        this.startMoveTimer();
+        this.broadcastRoomUpdate();
+        
+        // 如果AI是黑子（先手），让AI立即落子
+        if (this.hasAI && this.playerRoles['ai_player'] === 'black') {
+            setTimeout(() => {
+                this.makeAIMove();
+            }, 1000);
+        }
+    }
+
+    startMoveTimer() {
+        // 清除之前的计时器
+        this.game.clearMoveTimer();
+        
+        // 检查是否轮到AI玩家
+        if (this.hasAI) {
+            const currentPlayerRole = this.game.currentPlayer === 1 ? 'black' : 'white';
+            const isAITurn = this.playerRoles['ai_player'] === currentPlayerRole;
+            
+            if (isAITurn) {
+                // 如果轮到AI，直接触发AI落子
+                this.makeAIMove();
+                return;
+            }
+        }
+        
+        let timeLeft = this.game.moveTimeLimit;
+        this.game.currentTimeLeft = timeLeft;
+        this.game.timerStartTime = Date.now();
+        
+        // 广播倒计时开始
+        this.broadcastToAll('move-timer-start', { timeLeft });
+        
+        // 设置每秒更新的间隔
+        this.game.currentTimerInterval = setInterval(() => {
+            timeLeft--;
+            this.game.currentTimeLeft = timeLeft;
+            this.broadcastToAll('move-timer-tick', { timeLeft });
+            
+            if (timeLeft <= 0) {
+                this.game.clearMoveTimer();
+                this.handleMoveTimeout();
+            }
+        }, 1000);
+        
+        // 设置超时处理
+        this.game.currentMoveTimer = setTimeout(() => {
+            this.game.clearMoveTimer();
+            this.handleMoveTimeout();
+        }, this.game.moveTimeLimit * 1000);
+    }
+
+    handleMoveTimeout() {
+        // 超时处理：当前玩家败北
+        const currentPlayerRole = this.game.currentPlayer === 1 ? 'black' : 'white';
+        const winnerId = Object.keys(this.playerRoles).find(
+            id => this.playerRoles[id] !== currentPlayerRole
+        );
+        
+        this.endGame(winnerId, 'timeout');
+    }
+
+    broadcastToAll(event, data) {
+        // 广播给玩家
+        this.players.forEach(player => {
+            player.socket.emit(event, data);
+        });
+        
+        // 广播给观战者
+        this.spectators.forEach(spectator => {
+            spectator.socket.emit(event, data);
+        });
+    }
+
+    endGame(winnerId, reason = 'normal') {
+        this.status = ROOM_STATUS.FINISHED;
+        
+        // 清除倒计时
+        if (this.game) {
+            this.game.clearMoveTimer();
+        }
+        
+        const winnerPlayer = this.players.find(p => p.socket.id === winnerId);
+        const loserPlayer = this.players.find(p => p.socket.id !== winnerId);
+        
+        let gameResult = {
+            winner: winnerPlayer ? winnerPlayer.username : null,
+            loser: loserPlayer ? loserPlayer.username : null,
+            reason: reason,
+            winnerRole: winnerPlayer ? this.playerRoles[winnerId] : null,
+            totalMoves: this.game ? this.game.moveCount : 0
+        };
+        
+        this.gameResult = gameResult;
+        
+        // 通知所有玩家游戏结果
+        this.players.forEach(player => {
+            const isWinner = player.socket.id === winnerId;
+            player.socket.emit('game-end', {
+                result: isWinner ? 'win' : 'lose',
+                winner: gameResult.winner,
+                loser: gameResult.loser,
+                reason: reason,
+                winnerRole: gameResult.winnerRole,
+                totalMoves: gameResult.totalMoves
+            });
+        });
+        
+        // 通知观战者游戏结果
+        this.spectators.forEach(spectator => {
+            spectator.socket.emit('game-end', {
+                result: 'spectate',
+                winner: gameResult.winner,
+                loser: gameResult.loser,
+                reason: reason,
+                winnerRole: gameResult.winnerRole,
+                totalMoves: gameResult.totalMoves
+            });
+        });
+        
+        this.broadcastRoomUpdate();
+    }
+
+    makeMove(socket, row, col) {
+        if (this.status !== ROOM_STATUS.PLAYING || !this.game) return false;
+        
+        const playerRole = this.playerRoles[socket.id];
+        const playerNumber = playerRole === 'black' ? 1 : 2;
+        
+        if (this.game.currentPlayer !== playerNumber) {
+            return false;
+        }
+        
+        // 清除当前倒计时
+        this.game.clearMoveTimer();
+        
+        if (this.game.makeMove(row, col, playerNumber)) {
+            const lastMove = this.game.moveHistory[this.game.moveHistory.length - 1];
+            
+            const moveData = {
+                row, 
+                col, 
+                player: playerNumber,
+                nextPlayer: this.game.currentPlayer,
+                winner: this.game.winner,
+                moveCount: this.game.moveCount,
+                moveNumber: lastMove.moveNumber
+            };
+            
+            // 广播移动到所有玩家和观战者
+            this.broadcastToAll('move-made', moveData);
+            
+            if (this.game.winner) {
+                const winnerRole = this.game.winner === 1 ? 'black' : 'white';
+                const winnerId = Object.keys(this.playerRoles).find(
+                    id => this.playerRoles[id] === winnerRole
+                );
+                this.endGame(winnerId, 'normal');
+            } else {
+                // 开始下一步倒计时（内部会检查是否是AI的回合）
+                this.startMoveTimer();
+            }
+            
+            return true;
+        }
+        
+        return false;
+    }
+
+    resetForNewGame() {
+        // 重置游戏状态但保持房间和玩家
+        this.status = ROOM_STATUS.WAITING;
+        this.game = null;
+        this.playerRoles = {};
+        this.winner = null;
+        this.gameResult = null;
+        
+        // 清除所有计时器
+        if (this.choiceTimer) {
+            clearTimeout(this.choiceTimer);
+            this.choiceTimer = null;
+        }
+        if (this.choiceInterval) {
+            clearInterval(this.choiceInterval);
+            this.choiceInterval = null;
+        }
+        
+        // 如果有两个玩家，立即开始选择阶段
+        if (this.players.length === 2) {
+            this.startChoicePhase();
+        }
+        
+        this.broadcastRoomUpdate();
+    }
+
+    addAIPlayer() {
+        if (this.players.length >= 2) {
+            return false;
+        }
+        
+        // 创建一个虚拟的AI玩家对象
+        const aiPlayerObj = {
+            socket: { id: 'ai_player', emit: () => {}, to: () => ({ emit: () => {} }) },
+            username: 'AI玩家'
+        };
+        
+        this.players.push(aiPlayerObj);
+        this.hasAI = true;
+        
+        if (this.players.length === 2) {
+            this.startChoicePhase();
+        }
+        
+        this.broadcastRoomUpdate();
+        return true;
+    }
+
+    // AI玩家逻辑
+    playAI() {
+        if (!this.hasAI || this.game.currentPlayer !== 2) {
+            return;
+        }
+        
+        const aiPlayer = this.players.find(p => p.socket.id === 'ai_player');
+        if (!aiPlayer) {
+            return;
+        }
+        
+        // 创建AI实例
+        const ai = new AIPlayer(this.game, 2);
+        
+        // 获取最佳落子
+        const bestMove = ai.getBestMove();
+        if (bestMove) {
+            const { row, col } = bestMove;
+            this.makeMove(aiPlayer.socket, row, col);
+        }
+    }
+
+    makeAIMove() {
+        if (!this.hasAI || !this.aiPlayer || !this.game) return;
+        
+        const currentPlayerRole = this.game.currentPlayer === 1 ? 'black' : 'white';
+        const isAITurn = this.playerRoles['ai_player'] === currentPlayerRole;
+        
+        if (!isAITurn) return;
+        
+        // 延迟1秒让AI思考，增加真实感
+        setTimeout(() => {
+            const aiMove = this.aiPlayer.getBestMove();
+            if (aiMove) {
+                // 清除当前倒计时
+                this.game.clearMoveTimer();
+                
+                if (this.game.makeMove(aiMove.row, aiMove.col, this.aiPlayer.player)) {
+                    const lastMove = this.game.moveHistory[this.game.moveHistory.length - 1];
+                    
+                    const moveData = {
+                        row: aiMove.row,
+                        col: aiMove.col,
+                        player: this.aiPlayer.player,
+                        nextPlayer: this.game.currentPlayer,
+                        winner: this.game.winner,
+                        moveCount: this.game.moveCount,
+                        moveNumber: lastMove.moveNumber
+                    };
+                    
+                    // 广播移动到所有玩家和观战者
+                    this.broadcastToAll('move-made', moveData);
+                    
+                    if (this.game.winner) {
+                        const winnerRole = this.game.winner === 1 ? 'black' : 'white';
+                        const winnerId = this.playerRoles['ai_player'] === winnerRole ? 'ai_player' : 
+                            Object.keys(this.playerRoles).find(id => this.playerRoles[id] === winnerRole);
+                        this.endGame(winnerId, 'normal');
+                    } else {
+                        // 开始下一步倒计时
+                        this.startMoveTimer();
+                    }
+                }
+            }
+        }, 1000);
+    }
+}
+
+// AI玩家类
+class AIPlayer {
+    constructor(game, player) {
+        this.game = game;
+        this.player = player; // 1 or 2
+        this.difficulty = 'medium'; // easy, medium, hard
+    }
+
+    // 获取最佳落子位置
+    getBestMove() {
+        const availableMoves = this.getAvailableMoves();
+        if (availableMoves.length === 0) return null;
+
+        // 简单AI：随机选择 + 基本策略
+        switch (this.difficulty) {
+            case 'easy':
+                return this.getRandomMove(availableMoves);
+            case 'medium':
+                return this.getMediumMove(availableMoves);
+            case 'hard':
+                return this.getHardMove(availableMoves);
+            default:
+                return this.getRandomMove(availableMoves);
+        }
+    }
+
+    getAvailableMoves() {
+        const moves = [];
+        for (let row = 0; row < 15; row++) {
+            for (let col = 0; col < 15; col++) {
+                if (this.game.board[row][col] === 0) {
+                    moves.push({ row, col });
+                }
+            }
+        }
+        return moves;
+    }
+
+    getRandomMove(availableMoves) {
+        return availableMoves[Math.floor(Math.random() * availableMoves.length)];
+    }
+
+    getMediumMove(availableMoves) {
+        // 中等难度：优先考虑中心区域和已有棋子周围
+        const centerMoves = availableMoves.filter(move => {
+            const distanceFromCenter = Math.abs(move.row - 7) + Math.abs(move.col - 7);
+            return distanceFromCenter <= 6;
+        });
+
+        const nearExistingMoves = availableMoves.filter(move => {
+            return this.hasAdjacentPiece(move.row, move.col);
+        });
+
+        if (nearExistingMoves.length > 0) {
+            return nearExistingMoves[Math.floor(Math.random() * nearExistingMoves.length)];
+        }
+
+        if (centerMoves.length > 0) {
+            return centerMoves[Math.floor(Math.random() * centerMoves.length)];
+        }
+
+        return this.getRandomMove(availableMoves);
+    }
+
+    getHardMove(availableMoves) {
+        // 困难难度：使用简单的评估函数
+        let bestMove = null;
+        let bestScore = -Infinity;
+
+        for (let move of availableMoves) {
+            const score = this.evaluateMove(move.row, move.col);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMove = move;
+            }
+        }
+
+        return bestMove || this.getRandomMove(availableMoves);
+    }
+
+    hasAdjacentPiece(row, col) {
+        const directions = [
+            [-1, -1], [-1, 0], [-1, 1],
+            [0, -1],           [0, 1],
+            [1, -1],  [1, 0],  [1, 1]
+        ];
+
+        for (let [dx, dy] of directions) {
+            const newRow = row + dx;
+            const newCol = col + dy;
+            
+            if (newRow >= 0 && newRow < 15 && newCol >= 0 && newCol < 15) {
+                if (this.game.board[newRow][newCol] !== 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    evaluateMove(row, col) {
+        // 简单的评估函数
+        let score = 0;
+        
+        // 中心位置加分
+        const distanceFromCenter = Math.abs(row - 7) + Math.abs(col - 7);
+        score += (14 - distanceFromCenter) * 2;
+        
+        // 靠近已有棋子加分
+        if (this.hasAdjacentPiece(row, col)) {
+            score += 50;
+        }
+        
+        return score;
+    }
+}
+
+// Socket.IO连接处理
+io.on('connection', (socket) => {
+    console.log('用户连接:', socket.id);
+
+    // 获取房间列表
+    socket.on('get-rooms', () => {
+        const roomsList = Array.from(rooms.values()).map(room => room.getRoomInfo());
+        socket.emit('rooms-list', roomsList);
+    });
+
+    // 获取空闲玩家列表
+    socket.on('get-idle-players', () => {
+        const idlePlayersList = Array.from(idlePlayers.values());
+        socket.emit('idle-players-list', idlePlayersList);
+    });
+
+    // 设置为空闲状态
+    socket.on('set-idle', (username) => {
+        idlePlayers.set(socket.id, { 
+            id: socket.id,
+            username: username 
+        });
+        users.set(socket.id, { username, status: USER_STATUS.IDLE });
+        
+        // 广播空闲玩家更新
+        io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+    });
+
+    socket.on('join-room', (data) => {
+        const { username, roomId } = data;
+        
+        if (!rooms.has(roomId)) {
+            rooms.set(roomId, new Room(roomId));
+        }
+        
+        const room = rooms.get(roomId);
+        
+        if (room.addPlayer(socket, username)) {
+            socket.join(roomId);
+            users.set(socket.id, { username, roomId, status: USER_STATUS.IN_ROOM });
+            
+            socket.emit('joined-room', {
+                roomId,
+                playersCount: room.players.length,
+                status: room.status
+            });
+            
+            // 通知房间其他玩家
+            socket.to(roomId).emit('player-joined', {
+                username,
+                playersCount: room.players.length
+            });
+            
+            console.log(`${username} 加入房间 ${roomId}`);
+        } else {
+            socket.emit('room-full');
+        }
+    });
+
+    // 观战房间
+    socket.on('spectate-room', (data) => {
+        const { username, roomId } = data;
+        
+        if (!rooms.has(roomId)) {
+            socket.emit('room-not-found');
+            return;
+        }
+        
+        const room = rooms.get(roomId);
+        
+        if (room.addSpectator(socket, username)) {
+            socket.join(roomId);
+            users.set(socket.id, { username, roomId, status: USER_STATUS.SPECTATING });
+            
+            socket.emit('spectating-room', {
+                roomId,
+                playersCount: room.players.length,
+                spectatorsCount: room.spectators.length,
+                status: room.status,
+                players: room.players.map(p => ({
+                    username: p.username,
+                    role: room.playerRoles[p.socket.id]
+                }))
+            });
+            
+            // 通知房间有新观战者
+            socket.to(roomId).emit('spectator-joined', {
+                username,
+                spectatorsCount: room.spectators.length
+            });
+            
+            console.log(`${username} 观战房间 ${roomId}`);
+        }
+    });
+
+    socket.on('choose-first', () => {
+        console.log(`收到choose-first事件，socket ID: ${socket.id}`);
+        const user = users.get(socket.id);
+        if (user) {
+            console.log(`用户信息: ${JSON.stringify(user)}`);
+            const room = rooms.get(user.roomId);
+            if (room) {
+                console.log(`找到房间 ${user.roomId}，调用playerChooseFirst`);
+                room.playerChooseFirst(socket);
+            } else {
+                console.log(`未找到房间 ${user.roomId}`);
+            }
+        } else {
+            console.log(`未找到用户信息`);
+        }
+    });
+
+    socket.on('make-move', (data) => {
+        const { row, col } = data;
+        const user = users.get(socket.id);
+        
+        if (user) {
+            const room = rooms.get(user.roomId);
+            if (room) {
+                room.makeMove(socket, row, col);
+            }
+        }
+    });
+
+    // 邀请对战
+    socket.on('invite-player', (data) => {
+        const { to } = data;
+        const inviter = users.get(socket.id);
+        
+        if (!inviter) {
+            socket.emit('invite-failed', { message: '邀请失败：用户信息无效' });
+            return;
+        }
+        
+        // 查找被邀请的玩家
+        let targetSocket = null;
+        for (let [socketId, user] of users.entries()) {
+            if (user.username === to && user.status === USER_STATUS.IDLE) {
+                targetSocket = io.sockets.sockets.get(socketId);
+                break;
+            }
+        }
+        
+        if (!targetSocket) {
+            socket.emit('invite-failed', { message: '用户不在线或不可邀请' });
+            return;
+        }
+        
+        // 发送邀请
+        targetSocket.emit('invite-received', { from: inviter.username });
+        socket.emit('invite-sent', { to: to });
+    });
+
+    // 接受邀请
+    socket.on('accept-invite', (data) => {
+        const { from } = data;
+        const accepter = users.get(socket.id);
+        
+        if (!accepter) return;
+        
+        // 查找邀请者
+        let inviterSocket = null;
+        for (let [socketId, user] of users.entries()) {
+            if (user.username === from && user.status === USER_STATUS.IDLE) {
+                inviterSocket = io.sockets.sockets.get(socketId);
+                break;
+            }
+        }
+        
+        if (!inviterSocket) {
+            socket.emit('invite-failed', { message: '邀请者已离线' });
+            return;
+        }
+        
+        // 创建新房间
+        const roomId = 'invite_' + Date.now();
+        const room = new Room(roomId);
+        rooms.set(roomId, room);
+        
+        // 邀请者先加入房间
+        if (room.addPlayer(inviterSocket, from)) {
+            inviterSocket.join(roomId);
+            users.set(inviterSocket.id, { username: from, roomId, status: USER_STATUS.IN_ROOM });
+            idlePlayers.delete(inviterSocket.id);
+        }
+        
+        // 被邀请者加入房间
+        if (room.addPlayer(socket, accepter.username)) {
+            socket.join(roomId);
+            users.set(socket.id, { username: accepter.username, roomId, status: USER_STATUS.IN_ROOM });
+            idlePlayers.delete(socket.id);
+            
+            console.log(`邀请对战：${accepter.username} 加入房间 ${roomId}`);
+            
+            // 通知双方
+            inviterSocket.emit('invite-accepted', { username: accepter.username });
+            inviterSocket.emit('joined-room', {
+                roomId,
+                playersCount: 2,
+                status: room.status
+            });
+            
+            socket.emit('joined-room', {
+                roomId,
+                playersCount: 2,
+                status: room.status
+            });
+            
+            console.log(`邀请对战：房间 ${roomId} 状态为 ${room.status}，玩家数量：${room.players.length}`);
+            
+            // 广播空闲玩家更新
+            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+        }
+    });
+
+    // 拒绝邀请
+    socket.on('decline-invite', (data) => {
+        const { from } = data;
+        const decliner = users.get(socket.id);
+        
+        if (!decliner) return;
+        
+        // 查找邀请者
+        let inviterSocket = null;
+        for (let [socketId, user] of users.entries()) {
+            if (user.username === from) {
+                inviterSocket = io.sockets.sockets.get(socketId);
+                break;
+            }
+        }
+        
+        if (inviterSocket) {
+            inviterSocket.emit('invite-declined', { username: decliner.username });
+        }
+    });
+
+    // 重新开始游戏请求
+    socket.on('request-restart', () => {
+        const user = users.get(socket.id);
+        if (!user || !user.roomId) return;
+        
+        const room = rooms.get(user.roomId);
+        if (!room || room.players.length !== 2) return;
+        
+        // 找到房间中的另一个玩家
+        const otherPlayer = room.players.find(p => p.socket.id !== socket.id);
+        if (otherPlayer) {
+            otherPlayer.socket.emit('restart-request', { from: user.username });
+        }
+    });
+
+    // 接受重新开始
+    socket.on('accept-restart', (data) => {
+        const { from } = data;
+        const accepter = users.get(socket.id);
+        if (!accepter || !accepter.roomId) return;
+        
+        const room = rooms.get(accepter.roomId);
+        if (!room) return;
+        
+        // 找到发起重新开始的玩家
+        const requester = room.players.find(p => {
+            const user = users.get(p.socket.id);
+            return user && user.username === from;
+        });
+        if (requester) {
+            // 通知发起者被接受
+            requester.socket.emit('restart-accepted', { username: accepter.username });
+            
+            // 重置房间游戏状态
+            room.resetForNewGame();
+            
+            // 通知所有玩家游戏重新开始
+            room.players.forEach(player => {
+                player.socket.emit('game-restarted');
+            });
+            
+            // 通知观战者
+            room.spectators.forEach(spectator => {
+                spectator.socket.emit('game-restarted');
+            });
+        }
+    });
+
+    // 拒绝重新开始
+    socket.on('decline-restart', (data) => {
+        const { from } = data;
+        const decliner = users.get(socket.id);
+        if (!decliner || !decliner.roomId) return;
+        
+        const room = rooms.get(decliner.roomId);
+        if (!room) return;
+        
+        // 找到发起重新开始的玩家
+        const requester = room.players.find(p => {
+            const user = users.get(p.socket.id);
+            return user && user.username === from;
+        });
+        if (requester) {
+            requester.socket.emit('restart-declined', { username: decliner.username });
+        }
+    });
+
+    // 发送聊天消息
+    socket.on('send-message', (data) => {
+        const { message } = data;
+        const user = users.get(socket.id);
+        
+        if (!user || !user.roomId || !message.trim()) return;
+        
+        const room = rooms.get(user.roomId);
+        if (!room) return;
+        
+        // 广播消息给房间内的所有人（包括发送者）
+        const messageData = {
+            username: user.username,
+            message: message.trim(),
+            timestamp: Date.now()
+        };
+        
+        io.to(user.roomId).emit('chat-message', messageData);
+    });
+
+    // 玩家主动离开房间事件
+    socket.on('leave-room', () => {
+        console.log('玩家主动离开房间:', socket.id);
+        
+        const user = users.get(socket.id);
+        if (user && user.roomId) {
+            const room = rooms.get(user.roomId);
+            if (room) {
+                // 根据用户状态调用不同的移除方法
+                if (user.status === USER_STATUS.SPECTATING) {
+                    room.removeSpectator(socket);
+                    console.log(`观战者 ${user.username} 主动离开房间 ${user.roomId}`);
+                } else {
+                    room.removePlayer(socket);
+                    console.log(`玩家 ${user.username} 主动离开房间 ${user.roomId}`);
+                    
+                    // 通知房间其他玩家
+                    socket.to(user.roomId).emit('player-left', {
+                        username: user.username
+                    });
+                }
+                
+                // 如果房间空了，删除房间
+                if (room.players.length === 0 && room.spectators.length === 0) {
+                    rooms.delete(user.roomId);
+                }
+            }
+            
+            // 重置用户状态为空闲
+            user.roomId = null;
+            user.status = USER_STATUS.IDLE;
+            
+            // 将用户加回空闲列表
+            idlePlayers.set(socket.id, {
+                id: socket.id,
+                username: user.username
+            });
+            
+            // 广播空闲玩家更新和房间列表更新
+            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+            io.emit('rooms-updated', Array.from(rooms.values()).map(room => room.getRoomInfo()));
+            
+            // 确认离开房间
+            socket.emit('left-room');
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('用户断开连接:', socket.id);
+        
+        const user = users.get(socket.id);
+        if (user) {
+            // 从空闲列表移除
+            idlePlayers.delete(socket.id);
+            
+            // 广播空闲玩家更新
+            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+            
+            if (user.roomId) {
+                const room = rooms.get(user.roomId);
+                if (room) {
+                    // 根据用户状态调用不同的移除方法
+                    if (user.status === USER_STATUS.SPECTATING) {
+                        room.removeSpectator(socket);
+                        console.log(`观战者 ${user.username} 离开房间 ${user.roomId}`);
+                    } else {
+                        room.removePlayer(socket);
+                        console.log(`玩家 ${user.username} 离开房间 ${user.roomId}`);
+                        
+                        // 通知房间其他玩家
+                        socket.to(user.roomId).emit('player-left', {
+                            username: user.username
+                        });
+                    }
+                    
+                    // 如果房间空了，删除房间
+                    if (room.players.length === 0 && room.spectators.length === 0) {
+                        rooms.delete(user.roomId);
+                    }
+                }
+            }
+            users.delete(socket.id);
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, () => {
+    console.log(`五子棋服务器运行在端口 ${PORT}`);
+});

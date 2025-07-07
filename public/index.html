@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>云盾五子棋对战</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- 登录界面 -->
+        <div id="login-screen" class="screen active">
+            <div class="login-form">
+                <h1>云盾五子棋对战</h1>
+                <div class="form-group">
+                    <input type="text" id="username" placeholder="请输入用户名" maxlength="20">
+                </div>
+                <div class="form-group">
+                    <input type="text" id="room-id" placeholder="请输入房间号(可选)" maxlength="20">
+                </div>
+                <div class="button-group">
+                    <button id="join-btn" class="btn primary">加入游戏</button>
+                    <button id="lobby-btn" class="btn secondary">进入大厅</button>
+                </div>
+                <div class="tips">
+                    <p>• 不填写房间号将自动创建新房间</p>
+                    <p>• 每个房间最多2名玩家</p>
+                    <p>• 点击"进入大厅"查看所有房间和玩家</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 大厅界面 -->
+        <div id="lobby-screen" class="screen">
+            <div class="lobby-container">
+                <div class="lobby-header">
+                    <h2>游戏大厅</h2>
+                    <div class="user-info">
+                        <span id="current-username"></span>
+                        <button id="back-to-login" class="btn secondary">返回登录</button>
+                    </div>
+                </div>
+                
+                <div class="lobby-content">
+                    <div class="lobby-section">
+                        <h3>空闲玩家 <span id="idle-count">0</span></h3>
+                        <div id="idle-players" class="players-list"></div>
+                    </div>
+                    
+                    <div class="lobby-section">
+                        <h3>房间列表 <span id="rooms-count">0</span></h3>
+                        <div id="rooms-list" class="rooms-list"></div>
+                    </div>
+                </div>
+                
+                <div class="lobby-actions">
+                    <button id="create-room-btn" class="btn primary">创建房间</button>
+                    <button id="refresh-lobby-btn" class="btn secondary">刷新</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 等待界面 -->
+        <div id="waiting-screen" class="screen">
+            <div class="waiting-room">
+                <h2>房间: <span id="current-room-id"></span></h2>
+                <div class="players-info">
+                    <div class="player-card">
+                        <div class="avatar">👤</div>
+                        <div class="username" id="player1-name">等待玩家...</div>
+                        <div class="status">玩家1</div>
+                    </div>
+                    <div class="vs">VS</div>
+                    <div class="player-card">
+                        <div class="avatar">👤</div>
+                        <div class="username" id="player2-name">等待玩家...</div>
+                        <div class="status">玩家2</div>
+                    </div>
+                </div>
+                <div id="waiting-message" class="message">等待其他玩家加入...</div>
+            </div>
+        </div>
+
+        <!-- 选择先手界面 -->
+        <div id="choice-screen" class="screen">
+            <div class="choice-container">
+                <h2>选择先手</h2>
+                <div class="countdown-circle">
+                    <div class="countdown-number" id="countdown">30</div>
+                    <div class="countdown-text">秒后随机分配</div>
+                </div>
+                <div class="choice-buttons">
+                    <button id="choose-first-btn" class="btn choice-btn">我要先手</button>
+                    <button id="wait-btn" class="btn secondary">等待对手选择</button>
+                </div>
+                <div class="choice-info">
+                    <p>先手执黑子，后手执白子</p>
+                    <p>如果30秒内无人选择，将随机分配</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 游戏界面 -->
+        <div id="game-screen" class="screen">
+            <div class="game-container">
+                <div class="game-header">
+                    <div class="player-info">
+                        <div class="player black" id="black-player">
+                            <div class="piece black-piece"></div>
+                            <span class="player-name">黑子</span>
+                            <div class="turn-indicator" id="black-turn"></div>
+                        </div>
+                        <div class="game-status">
+                            <div id="game-message">游戏进行中</div>
+                            <div class="game-stats">
+                                <div class="move-counter">
+                                    第 <span id="move-count">0</span> 手
+                                </div>
+                                <div class="move-timer">
+                                    <div class="timer-circle">
+                                        <span id="timer-count">30</span>
+                                    </div>
+                                    <div class="timer-label">秒</div>
+                                </div>
+                            </div>
+                            <div id="spectator-info" class="spectator-info">观战中</div>
+                        </div>
+                        <div class="player white" id="white-player">
+                            <div class="piece white-piece"></div>
+                            <span class="player-name">白子</span>
+                            <div class="turn-indicator" id="white-turn"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="game-content">
+                    <div class="game-main">
+                        <div class="game-board-container">
+                            <canvas id="game-board" width="600" height="600"></canvas>
+                            <div id="threat-overlay" class="threat-overlay"></div>
+                        </div>
+                        
+                        <div class="game-controls">
+                            <div class="left-controls">
+                                <!-- 预留给其他功能按钮 -->
+                            </div>
+                            <div class="right-controls">
+                                <button id="restart-btn" class="btn secondary">重新开始</button>
+                                <button id="leave-btn" class="btn danger">离开房间</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="game-sidebar">
+                        <div class="chat-container">
+                            <div class="chat-header">
+                                <h4>游戏聊天</h4>
+                            </div>
+                            <div class="chat-messages" id="chat-messages"></div>
+                            <div class="chat-input-container">
+                                <input type="text" id="chat-input" placeholder="输入消息..." maxlength="100">
+                                <button id="send-message-btn" class="btn primary">发送</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 游戏结果弹窗 -->
+        <div id="result-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-close" id="result-close">&times;</div>
+                <div class="result-header">
+                    <div id="result-icon" class="result-icon"></div>
+                    <h2 id="result-title">游戏结束</h2>
+                </div>
+                <div class="result-body">
+                    <div id="result-message" class="result-message"></div>
+                    <div id="result-details" class="result-details"></div>
+                </div>
+                <div class="result-actions">
+                    <button id="play-again-btn" class="btn primary">再来一局</button>
+                    <button id="back-to-lobby-btn" class="btn secondary">返回大厅</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 邀请弹窗 -->
+        <div id="invite-modal" class="invite-modal">
+            <div class="invite-modal-content">
+                <h3>邀请对战</h3>
+                <p id="invite-message">是否接受 <span id="inviter-name"></span> 的对战邀请？</p>
+                <div class="btn-group">
+                    <button id="accept-invite-btn" class="btn primary">接受</button>
+                    <button id="decline-invite-btn" class="btn secondary">拒绝</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 重新开始确认弹窗 -->
+        <div id="restart-confirm-modal" class="invite-modal">
+            <div class="invite-modal-content">
+                <h3>重新开始游戏</h3>
+                <p id="restart-message"><span id="restart-requester"></span> 想要重新开始游戏，是否同意？</p>
+                <div class="btn-group">
+                    <button id="accept-restart-btn" class="btn primary">同意</button>
+                    <button id="decline-restart-btn" class="btn secondary">拒绝</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
