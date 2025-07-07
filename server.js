@@ -52,6 +52,14 @@ class Game {
             return false;
         }
         
+        // 检查黑子（玩家1）的禁手
+        if (player === 1) {
+            const forbiddenResult = this.checkForbiddenMoves(row, col, player);
+            if (forbiddenResult.isForbidden) {
+                return { forbidden: true, reason: forbiddenResult.reason };
+            }
+        }
+        
         this.board[row][col] = player;
         this.moveCount++;
         this.moveHistory.push({ 
@@ -117,6 +125,264 @@ class Game {
                 return true;
             }
         }
+        return false;
+    }
+
+    // 检查禁手
+    checkForbiddenMoves(row, col, player) {
+        // 临时放置棋子
+        this.board[row][col] = player;
+        
+        let result = { isForbidden: false, reason: '' };
+        
+        // 检查长连禁手（超过5个连子）
+        if (this.checkOverline(row, col, player)) {
+            result = { isForbidden: true, reason: '长连禁手' };
+        }
+        // 检查双三禁手
+        else if (this.checkDoubleThree(row, col, player)) {
+            result = { isForbidden: true, reason: '三三禁手' };
+        }
+        // 检查双四禁手
+        else if (this.checkDoubleFour(row, col, player)) {
+            result = { isForbidden: true, reason: '四四禁手' };
+        }
+        
+        // 移除临时棋子
+        this.board[row][col] = 0;
+        
+        return result;
+    }
+
+    // 检查长连禁手（超过5个连子）
+    checkOverline(row, col, player) {
+        const directions = [
+            [0, 1], [1, 0], [1, 1], [1, -1]
+        ];
+
+        for (let [dx, dy] of directions) {
+            let count = 1;
+            
+            // 检查正方向
+            for (let i = 1; i < 15; i++) {
+                const newRow = row + dx * i;
+                const newCol = col + dy * i;
+                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
+                    this.board[newRow][newCol] !== player) {
+                    break;
+                }
+                count++;
+            }
+            
+            // 检查反方向
+            for (let i = 1; i < 15; i++) {
+                const newRow = row - dx * i;
+                const newCol = col - dy * i;
+                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
+                    this.board[newRow][newCol] !== player) {
+                    break;
+                }
+                count++;
+            }
+            
+            // 如果连子数量超过5个，则为长连禁手
+            if (count > 5) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 检查双三禁手
+    checkDoubleThree(row, col, player) {
+        const directions = [
+            [0, 1], [1, 0], [1, 1], [1, -1]
+        ];
+        
+        let threeCount = 0;
+        
+        for (let [dx, dy] of directions) {
+            if (this.isLiveThree(row, col, dx, dy, player)) {
+                threeCount++;
+            }
+        }
+        
+        return threeCount >= 2;
+    }
+
+    // 检查双四禁手
+    checkDoubleFour(row, col, player) {
+        const directions = [
+            [0, 1], [1, 0], [1, 1], [1, -1]
+        ];
+        
+        let fourCount = 0;
+        
+        for (let [dx, dy] of directions) {
+            if (this.isLiveFour(row, col, dx, dy, player) || this.isBlockedFour(row, col, dx, dy, player)) {
+                fourCount++;
+            }
+        }
+        
+        return fourCount >= 2;
+    }
+
+    // 检查是否为活三
+    isLiveThree(row, col, dx, dy, player) {
+        // 检查以(row,col)为中心，方向为(dx,dy)的活三
+        const patterns = [
+            [-1, 0, 1, 2],  // _XXX
+            [-2, -1, 0, 1], // _XXX
+            [0, 1, 2, 3],   // XXX_
+            [-1, 0, 1, 3],  // _XX_X
+            [-1, 0, 2, 3],  // _X_XX
+        ];
+        
+        for (let pattern of patterns) {
+            let isPattern = true;
+            let emptyCount = 0;
+            let playerCount = 0;
+            
+            for (let i = 0; i < pattern.length; i++) {
+                const checkRow = row + pattern[i] * dx;
+                const checkCol = col + pattern[i] * dy;
+                
+                if (checkRow < 0 || checkRow >= 15 || checkCol < 0 || checkCol >= 15) {
+                    isPattern = false;
+                    break;
+                }
+                
+                const cell = this.board[checkRow][checkCol];
+                if (cell === player) {
+                    playerCount++;
+                } else if (cell === 0) {
+                    emptyCount++;
+                } else {
+                    isPattern = false;
+                    break;
+                }
+            }
+            
+            // 活三的条件：3个己方棋子，1个空位，两端都是空的
+            if (isPattern && playerCount === 3 && emptyCount === 1) {
+                // 检查两端是否为空
+                const leftRow = row + (pattern[0] - 1) * dx;
+                const leftCol = col + (pattern[0] - 1) * dy;
+                const rightRow = row + (pattern[pattern.length - 1] + 1) * dx;
+                const rightCol = col + (pattern[pattern.length - 1] + 1) * dy;
+                
+                const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
+                                 this.board[leftRow][leftCol] === 0);
+                const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
+                                  this.board[rightRow][rightCol] === 0);
+                
+                if (leftEmpty && rightEmpty) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    // 检查是否为活四
+    isLiveFour(row, col, dx, dy, player) {
+        // 简化的活四检测：4个连续的己方棋子，两端都是空的
+        let count = 1;
+        let leftPos = 0, rightPos = 0;
+        
+        // 向左计数
+        for (let i = 1; i < 5; i++) {
+            const checkRow = row - i * dx;
+            const checkCol = col - i * dy;
+            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
+                this.board[checkRow][checkCol] === player) {
+                count++;
+                leftPos = i;
+            } else {
+                break;
+            }
+        }
+        
+        // 向右计数
+        for (let i = 1; i < 5; i++) {
+            const checkRow = row + i * dx;
+            const checkCol = col + i * dy;
+            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
+                this.board[checkRow][checkCol] === player) {
+                count++;
+                rightPos = i;
+            } else {
+                break;
+            }
+        }
+        
+        if (count === 4) {
+            // 检查两端是否为空
+            const leftRow = row - (leftPos + 1) * dx;
+            const leftCol = col - (leftPos + 1) * dy;
+            const rightRow = row + (rightPos + 1) * dx;
+            const rightCol = col + (rightPos + 1) * dy;
+            
+            const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
+                             this.board[leftRow][leftCol] === 0);
+            const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
+                              this.board[rightRow][rightCol] === 0);
+            
+            return leftEmpty && rightEmpty;
+        }
+        
+        return false;
+    }
+
+    // 检查是否为冲四
+    isBlockedFour(row, col, dx, dy, player) {
+        // 简化的冲四检测：4个连续的己方棋子，一端是空的，另一端被堵
+        let count = 1;
+        let leftPos = 0, rightPos = 0;
+        
+        // 向左计数
+        for (let i = 1; i < 5; i++) {
+            const checkRow = row - i * dx;
+            const checkCol = col - i * dy;
+            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
+                this.board[checkRow][checkCol] === player) {
+                count++;
+                leftPos = i;
+            } else {
+                break;
+            }
+        }
+        
+        // 向右计数
+        for (let i = 1; i < 5; i++) {
+            const checkRow = row + i * dx;
+            const checkCol = col + i * dy;
+            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
+                this.board[checkRow][checkCol] === player) {
+                count++;
+                rightPos = i;
+            } else {
+                break;
+            }
+        }
+        
+        if (count === 4) {
+            // 检查两端的情况
+            const leftRow = row - (leftPos + 1) * dx;
+            const leftCol = col - (leftPos + 1) * dy;
+            const rightRow = row + (rightPos + 1) * dx;
+            const rightCol = col + (rightPos + 1) * dy;
+            
+            const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
+                             this.board[leftRow][leftCol] === 0);
+            const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
+                              this.board[rightRow][rightCol] === 0);
+            
+            // 冲四：一端空，另一端不空
+            return (leftEmpty && !rightEmpty) || (!leftEmpty && rightEmpty);
+        }
+        
         return false;
     }
 }
@@ -548,7 +814,23 @@ class Room {
         // 清除当前倒计时
         this.game.clearMoveTimer();
         
-        if (this.game.makeMove(row, col, playerNumber)) {
+        const moveResult = this.game.makeMove(row, col, playerNumber);
+        
+        // 处理禁手情况
+        if (moveResult && moveResult.forbidden) {
+            // 通知玩家禁手
+            socket.emit('forbidden-move', { 
+                reason: moveResult.reason,
+                row: row,
+                col: col
+            });
+            
+            // 重新开始倒计时
+            this.startMoveTimer();
+            return false;
+        }
+        
+        if (moveResult === true) {
             const lastMove = this.game.moveHistory[this.game.moveHistory.length - 1];
             
             const moveData = {
@@ -659,14 +941,33 @@ class Room {
         
         if (!isAITurn) return;
         
+        // 清除之前回合的禁手位置记录
+        this.aiPlayer.clearForbiddenMoves();
+        
         // 延迟1秒让AI思考，增加真实感
         setTimeout(() => {
-            const aiMove = this.aiPlayer.getBestMove();
-            if (aiMove) {
+            let aiMove = this.aiPlayer.getBestMove();
+            let attempts = 0;
+            const maxAttempts = 50; // 最多尝试50次
+            
+            // 如果AI是黑子，需要检查禁手
+            while (aiMove && attempts < maxAttempts) {
                 // 清除当前倒计时
                 this.game.clearMoveTimer();
                 
-                if (this.game.makeMove(aiMove.row, aiMove.col, this.aiPlayer.player)) {
+                const moveResult = this.game.makeMove(aiMove.row, aiMove.col, this.aiPlayer.player);
+                
+                // 如果是禁手，AI重新选择
+                if (moveResult && moveResult.forbidden) {
+                    console.log(`AI遇到禁手: ${moveResult.reason}，重新选择落子位置`);
+                    // 将这个位置标记为不可用，重新获取移动
+                    this.aiPlayer.addForbiddenMove(aiMove.row, aiMove.col);
+                    aiMove = this.aiPlayer.getBestMove();
+                    attempts++;
+                    continue;
+                }
+                
+                if (moveResult === true) {
                     const lastMove = this.game.moveHistory[this.game.moveHistory.length - 1];
                     
                     const moveData = {
@@ -691,7 +992,19 @@ class Room {
                         // 开始下一步倒计时
                         this.startMoveTimer();
                     }
+                    return; // 成功落子，退出
                 }
+                
+                // 如果移动失败（位置已被占用等），重新选择
+                this.aiPlayer.addForbiddenMove(aiMove.row, aiMove.col);
+                aiMove = this.aiPlayer.getBestMove();
+                attempts++;
+            }
+            
+            // 如果AI无法找到合适的落子位置，超时败北
+            if (attempts >= maxAttempts) {
+                console.log('AI无法找到合适的落子位置，超时败北');
+                this.handleMoveTimeout();
             }
         }, 1000);
     }
@@ -703,6 +1016,17 @@ class AIPlayer {
         this.game = game;
         this.player = player; // 1 or 2
         this.difficulty = 'medium'; // easy, medium, hard
+        this.forbiddenMoves = new Set(); // 存储当前回合禁止的位置
+    }
+
+    // 添加禁手位置
+    addForbiddenMove(row, col) {
+        this.forbiddenMoves.add(`${row},${col}`);
+    }
+
+    // 清除禁手位置（新回合开始时调用）
+    clearForbiddenMoves() {
+        this.forbiddenMoves.clear();
     }
 
     // 获取最佳落子位置
@@ -727,7 +1051,7 @@ class AIPlayer {
         const moves = [];
         for (let row = 0; row < 15; row++) {
             for (let col = 0; col < 15; col++) {
-                if (this.game.board[row][col] === 0) {
+                if (this.game.board[row][col] === 0 && !this.forbiddenMoves.has(`${row},${col}`)) {
                     moves.push({ row, col });
                 }
             }

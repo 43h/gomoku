@@ -463,6 +463,10 @@ class GomokuGame {
             }
         });
 
+        this.socket.on('forbidden-move', (data) => {
+            this.showForbiddenMoveModal(data.reason);
+        });
+
         this.socket.on('game-end', (data) => {
             this.stopTimer();
             this.showResultModal(data);
@@ -769,6 +773,89 @@ class GomokuGame {
 
     hideResultModal() {
         this.resultModal.classList.remove('active');
+    }
+
+    showForbiddenMoveModal(reason) {
+        // 创建临时的禁手提示弹窗
+        const forbiddenModal = document.createElement('div');
+        forbiddenModal.className = 'forbidden-modal';
+        forbiddenModal.innerHTML = `
+            <div class="forbidden-content">
+                <div class="forbidden-icon">⚠️</div>
+                <div class="forbidden-title">落子无效</div>
+                <div class="forbidden-message">${reason}</div>
+            </div>
+        `;
+        
+        // 添加样式
+        forbiddenModal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            animation: fadeIn 0.3s ease;
+        `;
+        
+        const forbiddenContent = forbiddenModal.querySelector('.forbidden-content');
+        forbiddenContent.style.cssText = `
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            animation: scaleIn 0.3s ease;
+        `;
+        
+        const forbiddenIcon = forbiddenModal.querySelector('.forbidden-icon');
+        forbiddenIcon.style.cssText = `
+            font-size: 48px;
+            margin-bottom: 15px;
+        `;
+        
+        const forbiddenTitle = forbiddenModal.querySelector('.forbidden-title');
+        forbiddenTitle.style.cssText = `
+            font-size: 24px;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 10px;
+        `;
+        
+        const forbiddenMessage = forbiddenModal.querySelector('.forbidden-message');
+        forbiddenMessage.style.cssText = `
+            font-size: 16px;
+            color: #666;
+        `;
+        
+        // 添加动画样式
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            @keyframes scaleIn {
+                from { transform: scale(0.7); opacity: 0; }
+                to { transform: scale(1); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        document.body.appendChild(forbiddenModal);
+        
+        // 1秒后自动隐藏
+        setTimeout(() => {
+            forbiddenModal.style.animation = 'fadeIn 0.3s ease reverse';
+            setTimeout(() => {
+                document.body.removeChild(forbiddenModal);
+                document.head.removeChild(style);
+            }, 300);
+        }, 1000);
     }
 
     playAgain() {
