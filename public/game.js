@@ -587,10 +587,29 @@ class GomokuGame {
             if (player.username !== this.username) {
                 const playerElement = document.createElement('div');
                 playerElement.className = 'player-item';
+                
+                // 构建胜率显示
+                let statsDisplay = '';
+                if (player.stats) {
+                    const blackStats = player.stats.blackTotal > 0 ? 
+                        `黑子: ${player.stats.blackWinRate}% (${player.stats.blackTotal}局)` : 
+                        '黑子: 暂无';
+                    const whiteStats = player.stats.whiteTotal > 0 ? 
+                        `白子: ${player.stats.whiteWinRate}% (${player.stats.whiteTotal}局)` : 
+                        '白子: 暂无';
+                    statsDisplay = `
+                        <div class="player-stats">
+                            <div class="stats-item black-stats">${blackStats}</div>
+                            <div class="stats-item white-stats">${whiteStats}</div>
+                        </div>
+                    `;
+                }
+                
                 playerElement.innerHTML = `
                     <div>
                         <div class="name">${player.username}</div>
                         <div class="status">空闲中</div>
+                        ${statsDisplay}
                     </div>
                     <button class="invite-btn" onclick="game.invitePlayer('${player.username}')">邀请对战</button>
                 `;

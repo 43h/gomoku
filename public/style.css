@@ -228,6 +228,31 @@ body {
     color: #666;
 }
 
+.player-stats {
+    margin-top: 5px;
+    font-size: 11px;
+    color: #666;
+}
+
+.stats-item {
+    margin: 2px 0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-block;
+    margin-right: 8px;
+}
+
+.black-stats {
+    background: rgba(0, 0, 0, 0.1);
+    color: #333;
+}
+
+.white-stats {
+    background: rgba(240, 240, 240, 0.8);
+    color: #555;
+    border: 1px solid #ddd;
+}
+
 .rooms-list {
     max-height: 300px;
     overflow-y: auto;

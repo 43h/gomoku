@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
+const fs = require('fs').promises;
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +16,100 @@ const rooms = new Map();
 const users = new Map();
 const idlePlayers = new Map(); // 空闲玩家列表
 const spectators = new Map(); // 观战者列表
+const userStats = new Map(); // 用户胜率统计 {username: {blackWins: 0, blackLoses: 0, whiteWins: 0, whiteLoses: 0}}
+
+// 胜率数据文件路径
+const STATS_FILE = path.join(__dirname, 'user_stats.json');
+
+// 加载用户胜率数据
+async function loadUserStats() {
+    try {
+        const data = await fs.readFile(STATS_FILE, 'utf8');
+        const stats = JSON.parse(data);
+        for (const [username, stat] of Object.entries(stats)) {
+            userStats.set(username, stat);
+        }
+        console.log(`已加载 ${userStats.size} 个用户的胜率数据`);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log('胜率数据文件不存在，将创建新文件');
+        } else {
+            console.error('加载胜率数据失败:', error);
+        }
+    }
+}
+
+// 保存用户胜率数据
+async function saveUserStats() {
+    try {
+        const stats = Object.fromEntries(userStats);
+        await fs.writeFile(STATS_FILE, JSON.stringify(stats, null, 2), 'utf8');
+        console.log('胜率数据已保存');
+    } catch (error) {
+        console.error('保存胜率数据失败:', error);
+    }
+}
+
+// 获取或创建用户统计数据
+function getUserStats(username) {
+    if (!userStats.has(username)) {
+        userStats.set(username, {
+            blackWins: 0,
+            blackLoses: 0,
+            whiteWins: 0,
+            whiteLoses: 0
+        });
+    }
+    return userStats.get(username);
+}
+
+// 更新用户胜率
+function updateUserStats(username, isBlack, isWin) {
+    const stats = getUserStats(username);
+    if (isBlack) {
+        if (isWin) {
+            stats.blackWins++;
+        } else {
+            stats.blackLoses++;
+        }
+    } else {
+        if (isWin) {
+            stats.whiteWins++;
+        } else {
+            stats.whiteLoses++;
+        }
+    }
+    
+    // 异步保存数据，不阻塞游戏流程
+    saveUserStats().catch(error => {
+        console.error('保存胜率数据时出错:', error);
+    });
+}
+
+// 计算胜率
+function calculateWinRate(wins, loses) {
+    const total = wins + loses;
+    return total === 0 ? 0 : Math.round((wins / total) * 100);
+}
+
+// 生成带胜率的空闲玩家列表
+function getIdlePlayersWithStats() {
+    return Array.from(idlePlayers.values()).map(player => {
+        const stats = getUserStats(player.username);
+        const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+        const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+        
+        return {
+            ...player,
+            stats: {
+                blackWinRate,
+                whiteWinRate,
+                blackTotal: stats.blackWins + stats.blackLoses,
+                whiteTotal: stats.whiteWins + stats.whiteLoses
+            }
+        };
+    });
+}
 
 // 房间状态枚举
 const ROOM_STATUS = {
@@ -773,6 +868,19 @@ class Room {
         
         this.gameResult = gameResult;
         
+        // 更新胜率统计（排除AI对战）
+        if (winnerPlayer && loserPlayer && !this.hasAI) {
+            const winnerIsBlack = this.playerRoles[winnerId] === 'black';
+            const loserIsBlack = !winnerIsBlack;
+            
+            // 更新胜者胜率
+            updateUserStats(winnerPlayer.username, winnerIsBlack, true);
+            // 更新败者胜率
+            updateUserStats(loserPlayer.username, loserIsBlack, false);
+            
+            console.log(`胜率更新: ${winnerPlayer.username}(${winnerIsBlack ? '黑' : '白'}) 胜, ${loserPlayer.username}(${loserIsBlack ? '黑' : '白'}) 负`);
+        }
+        
         // 通知所有玩家游戏结果
         this.players.forEach(player => {
             const isWinner = player.socket.id === winnerId;
@@ -1150,20 +1258,44 @@ io.on('connection', (socket) => {
 
     // 获取空闲玩家列表
     socket.on('get-idle-players', () => {
-        const idlePlayersList = Array.from(idlePlayers.values());
+        const idlePlayersList = Array.from(idlePlayers.values()).map(player => {
+            const stats = getUserStats(player.username);
+            const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+            const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+            
+            return {
+                ...player,
+                stats: {
+                    blackWinRate,
+                    whiteWinRate,
+                    blackTotal: stats.blackWins + stats.blackLoses,
+                    whiteTotal: stats.whiteWins + stats.whiteLoses
+                }
+            };
+        });
         socket.emit('idle-players-list', idlePlayersList);
     });
 
     // 设置为空闲状态
     socket.on('set-idle', (username) => {
+        const stats = getUserStats(username);
+        const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+        const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+        
         idlePlayers.set(socket.id, { 
             id: socket.id,
-            username: username 
+            username: username,
+            stats: {
+                blackWinRate,
+                whiteWinRate,
+                blackTotal: stats.blackWins + stats.blackLoses,
+                whiteTotal: stats.whiteWins + stats.whiteLoses
+            }
         });
         users.set(socket.id, { username, status: USER_STATUS.IDLE });
         
         // 广播空闲玩家更新
-        io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+        io.emit('idle-players-updated', getIdlePlayersWithStats());
     });
 
     socket.on('join-room', (data) => {
@@ -1349,7 +1481,7 @@ io.on('connection', (socket) => {
             console.log(`邀请对战：房间 ${roomId} 状态为 ${room.status}，玩家数量：${room.players.length}`);
             
             // 广播空闲玩家更新
-            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+            io.emit('idle-players-updated', getIdlePlayersWithStats());
         }
     });
 
@@ -1500,7 +1632,7 @@ io.on('connection', (socket) => {
             });
             
             // 广播空闲玩家更新和房间列表更新
-            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+            io.emit('idle-players-updated', getIdlePlayersWithStats());
             io.emit('rooms-updated', Array.from(rooms.values()).map(room => room.getRoomInfo()));
             
             // 确认离开房间
@@ -1517,7 +1649,7 @@ io.on('connection', (socket) => {
             idlePlayers.delete(socket.id);
             
             // 广播空闲玩家更新
-            io.emit('idle-players-updated', Array.from(idlePlayers.values()));
+            io.emit('idle-players-updated', getIdlePlayersWithStats());
             
             if (user.roomId) {
                 const room = rooms.get(user.roomId);
@@ -1549,6 +1681,20 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-    console.log(`五子棋服务器运行在端口 ${PORT}`);
-});
+// 启动服务器
+async function startServer() {
+    try {
+        // 加载用户胜率数据
+        await loadUserStats();
+        
+        server.listen(PORT, () => {
+            console.log(`五子棋服务器运行在端口 ${PORT}`);
+        });
+    } catch (error) {
+        console.error('服务器启动失败:', error);
+        process.exit(1);
+    }
+}
+
+// 启动服务器
+startServer();
