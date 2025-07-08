@@ -16,7 +16,8 @@ const rooms = new Map();
 const users = new Map();
 const idlePlayers = new Map(); // 空闲玩家列表
 const spectators = new Map(); // 观战者列表
-const userStats = new Map(); // 用户胜率统计 {username: {blackWins: 0, blackLoses: 0, whiteWins: 0, whiteLoses: 0}}
+const userStats = new Map(); // 用户胜率统计 {username: {blackWins: 0, blackLoses: 0, whiteWins: 0, whiteLoses: 0, score: 0, lastLogin: Date.now()}}
+const browserSessions = new Map(); // 浏览器会话记录 {browserId: {username: '', lastSeen: Date.now()}}
 
 // 胜率数据文件路径
 const STATS_FILE = path.join(__dirname, 'user_stats.json');
@@ -57,7 +58,9 @@ function getUserStats(username) {
             blackWins: 0,
             blackLoses: 0,
             whiteWins: 0,
-            whiteLoses: 0
+            whiteLoses: 0,
+            score: 1000, // 初始积分1000
+            lastLogin: Date.now()
         });
     }
     return userStats.get(username);
@@ -69,14 +72,18 @@ function updateUserStats(username, isBlack, isWin) {
     if (isBlack) {
         if (isWin) {
             stats.blackWins++;
+            stats.score += 50; // 胜利加50分
         } else {
             stats.blackLoses++;
+            stats.score = Math.max(0, stats.score - 30); // 失败扣30分，最低0分
         }
     } else {
         if (isWin) {
             stats.whiteWins++;
+            stats.score += 50; // 胜利加50分
         } else {
             stats.whiteLoses++;
+            stats.score = Math.max(0, stats.score - 30); // 失败扣30分，最低0分
         }
     }
     
@@ -105,10 +112,121 @@ function getIdlePlayersWithStats() {
                 blackWinRate,
                 whiteWinRate,
                 blackTotal: stats.blackWins + stats.blackLoses,
-                whiteTotal: stats.whiteWins + stats.whiteLoses
+                whiteTotal: stats.whiteWins + stats.whiteLoses,
+                score: stats.score
             }
         };
     });
+}
+
+// 获取在线玩家列表
+function getOnlinePlayersWithStats() {
+    const onlinePlayers = [];
+    
+    // 空闲玩家
+    for (const player of idlePlayers.values()) {
+        const stats = getUserStats(player.username);
+        const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+        const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+        
+        onlinePlayers.push({
+            ...player,
+            status: 'idle',
+            stats: {
+                blackWinRate,
+                whiteWinRate,
+                blackTotal: stats.blackWins + stats.blackLoses,
+                whiteTotal: stats.whiteWins + stats.whiteLoses,
+                score: stats.score
+            }
+        });
+    }
+    
+    // 游戏中的玩家
+    for (const room of rooms.values()) {
+        room.players.forEach(player => {
+            if (player.socket.id !== 'ai_player' && !idlePlayers.has(player.socket.id)) {
+                const stats = getUserStats(player.username);
+                const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+                const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+                
+                onlinePlayers.push({
+                    id: player.socket.id,
+                    username: player.username,
+                    status: 'playing',
+                    stats: {
+                        blackWinRate,
+                        whiteWinRate,
+                        blackTotal: stats.blackWins + stats.blackLoses,
+                        whiteTotal: stats.whiteWins + stats.whiteLoses,
+                        score: stats.score
+                    }
+                });
+            }
+        });
+    }
+    
+    // 观战玩家
+    for (const room of rooms.values()) {
+        room.spectators.forEach(spectator => {
+            if (!onlinePlayers.some(p => p.id === spectator.socket.id)) {
+                const stats = getUserStats(spectator.username);
+                const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+                const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+                
+                onlinePlayers.push({
+                    id: spectator.socket.id,
+                    username: spectator.username,
+                    status: 'spectating',
+                    stats: {
+                        blackWinRate,
+                        whiteWinRate,
+                        blackTotal: stats.blackWins + stats.blackLoses,
+                        whiteTotal: stats.whiteWins + stats.whiteLoses,
+                        score: stats.score
+                    }
+                });
+            }
+        });
+    }
+    
+    return onlinePlayers;
+}
+
+// 获取排名前N的玩家
+function getTopPlayers(limit = 10) {
+    const allPlayers = [];
+    
+    // 收集所有玩家数据
+    for (const [username, stats] of userStats.entries()) {
+        const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+        const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+        const totalGames = stats.blackWins + stats.blackLoses + stats.whiteWins + stats.whiteLoses;
+        
+        // 检查是否在线
+        let isOnline = false;
+        for (const user of users.values()) {
+            if (user.username === username) {
+                isOnline = true;
+                break;
+            }
+        }
+        
+        allPlayers.push({
+            username,
+            score: stats.score,
+            totalGames,
+            blackWinRate,
+            whiteWinRate,
+            isOnline,
+            lastLogin: stats.lastLogin
+        });
+    }
+    
+    // 按积分排序
+    allPlayers.sort((a, b) => b.score - a.score);
+    
+    return allPlayers.slice(0, limit);
 }
 
 // 房间状态枚举
@@ -1250,30 +1368,86 @@ class AIPlayer {
 io.on('connection', (socket) => {
     console.log('用户连接:', socket.id);
 
+    // 检查浏览器ID
+    socket.on('check-browser-id', (data) => {
+        const { browserId } = data;
+        if (browserId && browserSessions.has(browserId)) {
+            const session = browserSessions.get(browserId);
+            // 更新最后见面时间
+            session.lastSeen = Date.now();
+            // 更新用户登录时间
+            const stats = getUserStats(session.username);
+            stats.lastLogin = Date.now();
+            
+            socket.emit('browser-session-found', { username: session.username });
+        } else {
+            socket.emit('browser-session-not-found');
+        }
+    });
+
+    // 用户登录
+    socket.on('user-login', (data) => {
+        const { username, browserId } = data;
+        
+        // 保存浏览器会话
+        if (browserId) {
+            browserSessions.set(browserId, {
+                username: username,
+                lastSeen: Date.now()
+            });
+        }
+        
+        // 更新用户登录时间
+        const stats = getUserStats(username);
+        stats.lastLogin = Date.now();
+        
+        socket.emit('login-success', { username });
+    });
+
+    // 获取用户个人战绩
+    socket.on('get-user-stats', (data) => {
+        const { username } = data;
+        const stats = getUserStats(username);
+        const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
+        const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
+        const totalGames = stats.blackWins + stats.blackLoses + stats.whiteWins + stats.whiteLoses;
+        
+        socket.emit('user-stats', {
+            username,
+            score: stats.score,
+            totalGames,
+            blackWins: stats.blackWins,
+            blackLoses: stats.blackLoses,
+            whiteWins: stats.whiteWins,
+            whiteLoses: stats.whiteLoses,
+            blackWinRate,
+            whiteWinRate
+        });
+    });
+
+    // 获取排行榜
+    socket.on('get-leaderboard', () => {
+        const leaderboard = getTopPlayers();
+        socket.emit('leaderboard-data', leaderboard);
+    });
+
+    // 获取在线玩家列表
+    socket.on('get-online-players', () => {
+        const onlinePlayers = getOnlinePlayersWithStats();
+        socket.emit('online-players-list', onlinePlayers);
+    });
+
     // 获取房间列表
     socket.on('get-rooms', () => {
         const roomsList = Array.from(rooms.values()).map(room => room.getRoomInfo());
         socket.emit('rooms-list', roomsList);
     });
 
-    // 获取空闲玩家列表
+    // 获取空闲玩家列表（兼容旧版本）
     socket.on('get-idle-players', () => {
-        const idlePlayersList = Array.from(idlePlayers.values()).map(player => {
-            const stats = getUserStats(player.username);
-            const blackWinRate = calculateWinRate(stats.blackWins, stats.blackLoses);
-            const whiteWinRate = calculateWinRate(stats.whiteWins, stats.whiteLoses);
-            
-            return {
-                ...player,
-                stats: {
-                    blackWinRate,
-                    whiteWinRate,
-                    blackTotal: stats.blackWins + stats.blackLoses,
-                    whiteTotal: stats.whiteWins + stats.whiteLoses
-                }
-            };
-        });
-        socket.emit('idle-players-list', idlePlayersList);
+        const onlinePlayers = getOnlinePlayersWithStats();
+        const idlePlayers = onlinePlayers.filter(p => p.status === 'idle');
+        socket.emit('idle-players-list', idlePlayers);
     });
 
     // 设置为空闲状态
@@ -1289,13 +1463,14 @@ io.on('connection', (socket) => {
                 blackWinRate,
                 whiteWinRate,
                 blackTotal: stats.blackWins + stats.blackLoses,
-                whiteTotal: stats.whiteWins + stats.whiteLoses
+                whiteTotal: stats.whiteWins + stats.whiteLoses,
+                score: stats.score
             }
         });
         users.set(socket.id, { username, status: USER_STATUS.IDLE });
         
-        // 广播空闲玩家更新
-        io.emit('idle-players-updated', getIdlePlayersWithStats());
+        // 广播在线玩家更新
+        io.emit('online-players-updated', getOnlinePlayersWithStats());
     });
 
     socket.on('join-room', (data) => {
@@ -1404,7 +1579,7 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // 查找被邀请的玩家
+        // 查找被邀请的玩家（只能邀请空闲玩家）
         let targetSocket = null;
         for (let [socketId, user] of users.entries()) {
             if (user.username === to && user.status === USER_STATUS.IDLE) {
@@ -1480,8 +1655,8 @@ io.on('connection', (socket) => {
             
             console.log(`邀请对战：房间 ${roomId} 状态为 ${room.status}，玩家数量：${room.players.length}`);
             
-            // 广播空闲玩家更新
-            io.emit('idle-players-updated', getIdlePlayersWithStats());
+            // 广播在线玩家更新
+            io.emit('online-players-updated', getOnlinePlayersWithStats());
         }
     });
 
@@ -1631,8 +1806,8 @@ io.on('connection', (socket) => {
                 username: user.username
             });
             
-            // 广播空闲玩家更新和房间列表更新
-            io.emit('idle-players-updated', getIdlePlayersWithStats());
+            // 广播在线玩家更新和房间列表更新
+            io.emit('online-players-updated', getOnlinePlayersWithStats());
             io.emit('rooms-updated', Array.from(rooms.values()).map(room => room.getRoomInfo()));
             
             // 确认离开房间
@@ -1648,8 +1823,8 @@ io.on('connection', (socket) => {
             // 从空闲列表移除
             idlePlayers.delete(socket.id);
             
-            // 广播空闲玩家更新
-            io.emit('idle-players-updated', getIdlePlayersWithStats());
+            // 广播在线玩家更新
+            io.emit('online-players-updated', getOnlinePlayersWithStats());
             
             if (user.roomId) {
                 const room = rooms.get(user.roomId);

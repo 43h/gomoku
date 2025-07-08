@@ -16,17 +16,12 @@
                 <div class="form-group">
                     <input type="text" id="username" placeholder="请输入用户名" maxlength="20">
                 </div>
-                <div class="form-group">
-                    <input type="text" id="room-id" placeholder="请输入房间号(可选)" maxlength="20">
-                </div>
                 <div class="button-group">
-                    <button id="join-btn" class="btn primary">加入游戏</button>
-                    <button id="lobby-btn" class="btn secondary">进入大厅</button>
+                    <button id="login-btn" class="btn primary">登录游戏</button>
                 </div>
                 <div class="tips">
-                    <p>• 不填写房间号将自动创建新房间</p>
-                    <p>• 每个房间最多2名玩家</p>
-                    <p>• 点击"进入大厅"查看所有房间和玩家</p>
+                    <p>• 系统会自动记录您的游戏战绩</p>
+                    <p>• 每场胜利可获得积分奖励</p>
                 </div>
             </div>
         </div>
@@ -38,19 +33,53 @@
                     <h2>游戏大厅</h2>
                     <div class="user-info">
                         <span id="current-username"></span>
+                        <!-- 用户战绩显示 -->
+                        <div class="user-stats-section">
+                            <div id="user-stats" class="stats-display">
+                                <div class="stat-item">
+                                    <span class="stat-label">积分:</span>
+                                    <span id="user-score" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">总局数:</span>
+                                    <span id="user-total-games" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">黑子胜率:</span>
+                                    <span id="user-black-rate" class="stat-value">0%</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">白子胜率:</span>
+                                    <span id="user-white-rate" class="stat-value">0%</span>
+                                </div>
+                            </div>
+                        </div>
                         <button id="back-to-login" class="btn secondary">返回登录</button>
                     </div>
                 </div>
                 
                 <div class="lobby-content">
-                    <div class="lobby-section">
-                        <h3>空闲玩家 <span id="idle-count">0</span></h3>
-                        <div id="idle-players" class="players-list"></div>
+                    <!-- 排行榜 -->
+                    <div class="leaderboard-section">
+                        <h3>积分排行榜</h3>
+                        <div id="leaderboard" class="leaderboard-list"></div>
                     </div>
                     
-                    <div class="lobby-section">
-                        <h3>房间列表 <span id="rooms-count">0</span></h3>
-                        <div id="rooms-list" class="rooms-list"></div>
+                    <div class="lobby-main">
+                        <div class="lobby-section">
+                            <h3>在线玩家</h3>
+                            <div class="player-status-tabs">
+                                <button class="tab-btn active" data-status="idle">空闲 <span id="idle-count">0</span></button>
+                                <button class="tab-btn" data-status="playing">游戏中 <span id="playing-count">0</span></button>
+                                <button class="tab-btn" data-status="spectating">观战中 <span id="spectating-count">0</span></button>
+                            </div>
+                            <div id="online-players" class="players-list"></div>
+                        </div>
+                        
+                        <div class="lobby-section">
+                            <h3>房间列表 <span id="rooms-count">0</span></h3>
+                            <div id="rooms-list" class="rooms-list"></div>
+                        </div>
                     </div>
                 </div>
                 

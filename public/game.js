@@ -10,10 +10,28 @@ class GomokuGame {
         this.gameBoard = null;
         this.boardSize = 15;
         this.cellSize = 40;
+        this.currentPlayerFilter = 'idle'; // 当前显示的玩家状态过滤器
+        this.browserId = this.getBrowserId(); // 浏览器唯一标识
         
         this.initializeElements();
         this.bindEvents();
         this.setupSocketEvents();
+        this.checkBrowserSession();
+    }
+
+    // 获取或生成浏览器唯一标识
+    getBrowserId() {
+        let browserId = localStorage.getItem('gomoku_browser_id');
+        if (!browserId) {
+            browserId = 'browser_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('gomoku_browser_id', browserId);
+        }
+        return browserId;
+    }
+
+    // 检查浏览器会话
+    checkBrowserSession() {
+        this.socket.emit('check-browser-id', { browserId: this.browserId });
     }
 
     initializeElements() {
@@ -28,19 +46,32 @@ class GomokuGame {
 
         // 登录界面元素
         this.usernameInput = document.getElementById('username');
-        this.roomIdInput = document.getElementById('room-id');
-        this.joinBtn = document.getElementById('join-btn');
-        this.lobbyBtn = document.getElementById('lobby-btn');
+        this.loginBtn = document.getElementById('login-btn');
 
         // 大厅界面元素
         this.currentUsernameSpan = document.getElementById('current-username');
         this.backToLoginBtn = document.getElementById('back-to-login');
-        this.idlePlayersDiv = document.getElementById('idle-players');
+        this.onlinePlayersDiv = document.getElementById('online-players');
         this.idleCountSpan = document.getElementById('idle-count');
+        this.playingCountSpan = document.getElementById('playing-count');
+        this.spectatingCountSpan = document.getElementById('spectating-count');
         this.roomsListDiv = document.getElementById('rooms-list');
         this.roomsCountSpan = document.getElementById('rooms-count');
         this.createRoomBtn = document.getElementById('create-room-btn');
         this.refreshLobbyBtn = document.getElementById('refresh-lobby-btn');
+
+        // 用户战绩元素
+        this.userStatsDiv = document.getElementById('user-stats');
+        this.userScoreSpan = document.getElementById('user-score');
+        this.userTotalGamesSpan = document.getElementById('user-total-games');
+        this.userBlackRateSpan = document.getElementById('user-black-rate');
+        this.userWhiteRateSpan = document.getElementById('user-white-rate');
+
+        // 排行榜元素
+        this.leaderboardDiv = document.getElementById('leaderboard');
+
+        // 玩家状态标签
+        this.playerStatusTabs = document.querySelectorAll('.tab-btn');
 
         // 等待界面元素
         this.currentRoomIdSpan = document.getElementById('current-room-id');
@@ -178,13 +209,18 @@ class GomokuGame {
 
     bindEvents() {
         // 登录按钮事件
-        this.joinBtn.addEventListener('click', () => {
-            this.joinGame();
+        this.loginBtn.addEventListener('click', () => {
+            this.login();
         });
 
-        // 进入大厅按钮
-        this.lobbyBtn.addEventListener('click', () => {
-            this.enterLobby();
+        // 玩家状态标签事件
+        this.playerStatusTabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.playerStatusTabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                this.currentPlayerFilter = tab.dataset.status;
+                this.filterOnlinePlayers();
+            });
         });
 
         // 返回登录按钮
@@ -205,13 +241,7 @@ class GomokuGame {
         // 回车键登录
         this.usernameInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                this.joinGame();
-            }
-        });
-
-        this.roomIdInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.joinGame();
+                this.login();
             }
         });
 
@@ -292,6 +322,43 @@ class GomokuGame {
     }
 
     setupSocketEvents() {
+        // 浏览器会话检查结果
+        this.socket.on('browser-session-found', (data) => {
+            this.username = data.username;
+            this.currentUsernameSpan.textContent = this.username;
+            this.enterLobby();
+        });
+
+        this.socket.on('browser-session-not-found', () => {
+            // 没有找到会话，保持在登录界面
+            this.showScreen('login');
+        });
+
+        // 登录成功
+        this.socket.on('login-success', (data) => {
+            this.username = data.username;
+            this.currentUsernameSpan.textContent = this.username;
+            this.enterLobby();
+        });
+
+        // 用户战绩数据
+        this.socket.on('user-stats', (data) => {
+            this.updateUserStats(data);
+        });
+
+        // 排行榜数据
+        this.socket.on('leaderboard-data', (data) => {
+            this.updateLeaderboard(data);
+        });
+
+        // 在线玩家列表
+        this.socket.on('online-players-list', (data) => {
+            this.updateOnlinePlayersList(data);
+        });
+
+        this.socket.on('online-players-updated', (data) => {
+            this.updateOnlinePlayersList(data);
+        });
         this.socket.on('joined-room', (data) => {
             console.log('收到 joined-room 事件:', data);
             this.roomId = data.roomId;
@@ -360,11 +427,11 @@ class GomokuGame {
         });
 
         this.socket.on('idle-players-updated', (players) => {
-            this.updateIdlePlayersList(players);
+            this.updateOnlinePlayersList(players);
         });
 
         this.socket.on('idle-players-list', (players) => {
-            this.updateIdlePlayersList(players);
+            this.updateOnlinePlayersList(players);
         });
 
         this.socket.on('rooms-list', (rooms) => {
@@ -539,34 +606,18 @@ class GomokuGame {
         });
     }
 
-    joinGame() {
-        const username = this.usernameInput.value.trim();
-        const roomId = this.roomIdInput.value.trim() || this.generateRoomId();
-        
-        if (!username) {
-            alert('请输入用户名');
-            return;
-        }
-        
-        this.username = username;
-        this.socket.emit('join-room', { username, roomId });
-    }
-
     enterLobby() {
-        const username = this.usernameInput.value.trim();
-        
-        if (!username) {
-            alert('请输入用户名');
-            return;
-        }
-        
-        this.username = username;
-        this.currentUsernameSpan.textContent = username;
         this.showScreen('lobby');
         
         // 设置为空闲状态并刷新大厅
-        this.socket.emit('set-idle', username);
+        this.socket.emit('set-idle', this.username);
         this.refreshLobby();
+        
+        // 获取用户战绩
+        this.socket.emit('get-user-stats', { username: this.username });
+        
+        // 获取排行榜
+        this.socket.emit('get-leaderboard');
     }
 
     createRoom() {
@@ -576,46 +627,7 @@ class GomokuGame {
 
     refreshLobby() {
         this.socket.emit('get-rooms');
-        this.socket.emit('get-idle-players');
-    }
-
-    updateIdlePlayersList(players) {
-        this.idleCountSpan.textContent = players.length;
-        this.idlePlayersDiv.innerHTML = '';
-        
-        players.forEach(player => {
-            if (player.username !== this.username) {
-                const playerElement = document.createElement('div');
-                playerElement.className = 'player-item';
-                
-                // 构建胜率显示
-                let statsDisplay = '';
-                if (player.stats) {
-                    const blackStats = player.stats.blackTotal > 0 ? 
-                        `黑子: ${player.stats.blackWinRate}% (${player.stats.blackTotal}局)` : 
-                        '黑子: 暂无';
-                    const whiteStats = player.stats.whiteTotal > 0 ? 
-                        `白子: ${player.stats.whiteWinRate}% (${player.stats.whiteTotal}局)` : 
-                        '白子: 暂无';
-                    statsDisplay = `
-                        <div class="player-stats">
-                            <div class="stats-item black-stats">${blackStats}</div>
-                            <div class="stats-item white-stats">${whiteStats}</div>
-                        </div>
-                    `;
-                }
-                
-                playerElement.innerHTML = `
-                    <div>
-                        <div class="name">${player.username}</div>
-                        <div class="status">空闲中</div>
-                        ${statsDisplay}
-                    </div>
-                    <button class="invite-btn" onclick="game.invitePlayer('${player.username}')">邀请对战</button>
-                `;
-                this.idlePlayersDiv.appendChild(playerElement);
-            }
-        });
+        this.socket.emit('get-online-players');
     }
 
     updateRoomsList(rooms) {
@@ -731,6 +743,96 @@ class GomokuGame {
         } else {
             this.showRestartButtonForPlayer();
         }
+    }
+
+    // 登录方法
+    login() {
+        const username = this.usernameInput.value.trim();
+        if (!username) {
+            alert('请输入用户名');
+            return;
+        }
+
+        this.socket.emit('user-login', { username: username, browserId: this.browserId });
+    }
+
+    // 更新用户战绩显示
+    updateUserStats(data) {
+        this.userScoreSpan.textContent = data.score;
+        this.userTotalGamesSpan.textContent = data.totalGames;
+        this.userBlackRateSpan.textContent = data.blackWinRate + '%';
+        this.userWhiteRateSpan.textContent = data.whiteWinRate + '%';
+    }
+
+    // 更新排行榜
+    updateLeaderboard(data) {
+        this.leaderboardDiv.innerHTML = '';
+        
+        data.forEach((player, index) => {
+            const playerElement = document.createElement('div');
+            playerElement.className = 'leaderboard-item';
+            
+            const statusClass = player.isOnline ? 'online' : 'offline';
+            const statusText = player.isOnline ? '在线' : '离线';
+            
+            playerElement.innerHTML = `
+                <div class="rank">${index + 1}</div>
+                <div class="player-name">${player.username} <span class="status ${statusClass}">${statusText}</span></div>
+                <div class="score">${player.score}分</div>
+                <div class="games">${player.totalGames}局</div>
+            `;
+            
+            this.leaderboardDiv.appendChild(playerElement);
+        });
+    }
+
+    // 更新在线玩家列表
+    updateOnlinePlayersList(data) {
+        this.onlinePlayersData = data;
+        this.filterOnlinePlayers();
+        
+        // 更新各状态的计数
+        const idleCount = data.filter(p => p.status === 'idle').length;
+        const playingCount = data.filter(p => p.status === 'playing').length;
+        const spectatingCount = data.filter(p => p.status === 'spectating').length;
+        
+        this.idleCountSpan.textContent = idleCount;
+        this.playingCountSpan.textContent = playingCount;
+        this.spectatingCountSpan.textContent = spectatingCount;
+    }
+
+    // 过滤在线玩家显示
+    filterOnlinePlayers() {
+        if (!this.onlinePlayersData) return;
+        
+        const filteredPlayers = this.onlinePlayersData.filter(player => 
+            player.status === this.currentPlayerFilter
+        );
+        
+        this.onlinePlayersDiv.innerHTML = '';
+        
+        filteredPlayers.forEach(player => {
+            const playerElement = document.createElement('div');
+            playerElement.className = 'player-item';
+            
+            const canInvite = player.status === 'idle' && player.username !== this.username;
+            
+            playerElement.innerHTML = `
+                <div class="player-info">
+                    <div class="player-name">${player.username}</div>
+                    <div class="player-stats">
+                        积分: ${player.stats.score} | 
+                        黑子: ${player.stats.blackWinRate}% (${player.stats.blackTotal}局) |
+                        白子: ${player.stats.whiteWinRate}% (${player.stats.whiteTotal}局)
+                    </div>
+                </div>
+                <div class="player-actions">
+                    ${canInvite ? `<button class="btn primary" onclick="game.invitePlayer('${player.username}')">邀请对战</button>` : ''}
+                </div>
+            `;
+            
+            this.onlinePlayersDiv.appendChild(playerElement);
+        });
     }
 
     updateSpectatorView(currentPlayer) {
