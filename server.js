@@ -59,7 +59,7 @@ function getUserStats(username) {
             blackLoses: 0,
             whiteWins: 0,
             whiteLoses: 0,
-            score: 1000, // 初始积分1000
+            score: 1100, // 初始积分1100
             lastLogin: Date.now()
         });
     }
@@ -67,23 +67,28 @@ function getUserStats(username) {
 }
 
 // 更新用户胜率
-function updateUserStats(username, isBlack, isWin) {
+function updateUserStats(username, isBlack, isWin, opponentScore = 1100) {
     const stats = getUserStats(username);
+    const playerScore = stats.score;
+    
+    // 计算积分变化
+    const scoreChange = calculateScoreChange(playerScore, opponentScore, isWin);
+    
     if (isBlack) {
         if (isWin) {
             stats.blackWins++;
-            stats.score += 50; // 胜利加50分
+            stats.score += scoreChange.winner;
         } else {
             stats.blackLoses++;
-            stats.score = Math.max(0, stats.score - 30); // 失败扣30分，最低0分
+            stats.score = Math.max(0, stats.score + scoreChange.loser);
         }
     } else {
         if (isWin) {
             stats.whiteWins++;
-            stats.score += 50; // 胜利加50分
+            stats.score += scoreChange.winner;
         } else {
             stats.whiteLoses++;
-            stats.score = Math.max(0, stats.score - 30); // 失败扣30分，最低0分
+            stats.score = Math.max(0, stats.score + scoreChange.loser);
         }
     }
     
@@ -91,6 +96,74 @@ function updateUserStats(username, isBlack, isWin) {
     saveUserStats().catch(error => {
         console.error('保存胜率数据时出错:', error);
     });
+}
+
+// 计算积分变化
+function calculateScoreChange(playerScore, opponentScore, isWin) {
+    const scoreDiff = Math.abs(playerScore - opponentScore);
+    
+    if (isWin) {
+        // 胜者加分
+        if (scoreDiff <= 50) {
+            // 实力相当 (分差50以内)
+            return { winner: 25, loser: -20 };
+        } else if (playerScore < opponentScore) {
+            // 挑战高分获胜 (低分打败高分)
+            const bonus = Math.floor(scoreDiff / 50) * 3; // 每50分差额外+3分
+            return { winner: Math.min(45, 30 + bonus), loser: -15 };
+        } else {
+            // 高分打败低分
+            const penalty = Math.floor(scoreDiff / 100) * 3; // 每100分差减少3分
+            return { winner: Math.max(8, 20 - penalty), loser: -25 };
+        }
+    } else {
+        // 败者扣分（返回负值）
+        if (scoreDiff <= 50) {
+            return { winner: 25, loser: -20 };
+        } else if (playerScore > opponentScore) {
+            // 高分败给低分（爆冷）
+            const penalty = Math.floor(scoreDiff / 50) * 3;
+            return { winner: Math.min(45, 30 + penalty), loser: -Math.max(35, 25 + penalty) };
+        } else {
+            // 低分败给高分（正常）
+            const reduction = Math.floor(scoreDiff / 100) * 2;
+            return { winner: Math.max(8, 20 - reduction), loser: -Math.max(8, 15 - reduction) };
+        }
+    }
+}
+
+// 获取段位
+function getRank(score) {
+    if (score >= 1800) return { name: '王者', level: 7, color: '#ff6b35' };
+    if (score >= 1600) return { name: '钻石', level: 6, color: '#00d4ff' };
+    if (score >= 1400) return { name: '铂金', level: 5, color: '#00ff88' };
+    if (score >= 1200) return { name: '黄金', level: 4, color: '#ffd700' };
+    if (score >= 1000) return { name: '白银', level: 3, color: '#c0c0c0' };
+    if (score >= 800) return { name: '青铜', level: 2, color: '#cd7f32' };
+    return { name: '新手', level: 1, color: '#8b4513' };
+}
+
+// 获取称号
+function getTitle(rank, username, allPlayers) {
+    // 根据排名获取称号
+    if (rank === 1) return '棋圣';
+    if (rank === 2) return '棋王';
+    if (rank === 3) return '神秘黑马';
+    
+    // 根据段位获取称号
+    const player = allPlayers.find(p => p.username === username);
+    if (player) {
+        const rankInfo = getRank(player.score);
+        switch (rankInfo.name) {
+            case '王者': return '五子王者';
+            case '钻石': return '钻石高手';
+            case '铂金': return '铂金棋士';
+            case '黄金': return '黄金选手';
+            default: return '';
+        }
+    }
+    
+    return '';
 }
 
 // 计算胜率
@@ -991,10 +1064,14 @@ class Room {
             const winnerIsBlack = this.playerRoles[winnerId] === 'black';
             const loserIsBlack = !winnerIsBlack;
             
-            // 更新胜者胜率
-            updateUserStats(winnerPlayer.username, winnerIsBlack, true);
-            // 更新败者胜率
-            updateUserStats(loserPlayer.username, loserIsBlack, false);
+            // 获取双方当前分数
+            const winnerScore = getUserStats(winnerPlayer.username).score;
+            const loserScore = getUserStats(loserPlayer.username).score;
+            
+            // 更新胜者胜率（传递败者分数）
+            updateUserStats(winnerPlayer.username, winnerIsBlack, true, loserScore);
+            // 更新败者胜率（传递胜者分数）
+            updateUserStats(loserPlayer.username, loserIsBlack, false, winnerScore);
             
             console.log(`胜率更新: ${winnerPlayer.username}(${winnerIsBlack ? '黑' : '白'}) 胜, ${loserPlayer.username}(${loserIsBlack ? '黑' : '白'}) 负`);
         }

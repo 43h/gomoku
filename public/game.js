@@ -775,10 +775,21 @@ class GomokuGame {
             const statusClass = player.isOnline ? 'online' : 'offline';
             const statusText = player.isOnline ? '在线' : '离线';
             
+            // 获取段位信息
+            const rankInfo = this.getRankInfo(player.score);
+            const title = this.getPlayerTitle(index + 1, player.score);
+            
             playerElement.innerHTML = `
                 <div class="rank">${index + 1}</div>
-                <div class="player-name">${player.username} <span class="status ${statusClass}">${statusText}</span></div>
-                <div class="score">${player.score}分</div>
+                <div class="player-name">
+                    ${player.username} 
+                    ${title ? `<span class="title">${title}</span>` : ''}
+                    <span class="status ${statusClass}">${statusText}</span>
+                </div>
+                <div class="score">
+                    <span class="rank-badge" style="color: ${rankInfo.color}">${rankInfo.name}</span>
+                    ${player.score}分
+                </div>
                 <div class="games">${player.totalGames}局</div>
             `;
             
@@ -817,9 +828,15 @@ class GomokuGame {
             
             const canInvite = player.status === 'idle' && player.username !== this.username;
             
+            // 获取段位信息
+            const rankInfo = this.getRankInfo(player.stats.score);
+            
             playerElement.innerHTML = `
                 <div class="player-info">
-                    <div class="player-name">${player.username}</div>
+                    <div class="player-name">
+                        ${player.username} 
+                        <span class="rank-badge" style="color: ${rankInfo.color}">${rankInfo.name}</span>
+                    </div>
                     <div class="player-stats">
                         积分: ${player.stats.score} | 
                         黑子: ${player.stats.blackWinRate}% (${player.stats.blackTotal}局) |
@@ -1299,7 +1316,32 @@ class GomokuGame {
         return div.innerHTML;
     }
 
-    // ...existing code...
+    // 获取段位信息
+    getRankInfo(score) {
+        if (score >= 1800) return { name: '王者', level: 7, color: '#ff6b35' };
+        if (score >= 1600) return { name: '钻石', level: 6, color: '#00d4ff' };
+        if (score >= 1400) return { name: '铂金', level: 5, color: '#00ff88' };
+        if (score >= 1200) return { name: '黄金', level: 4, color: '#ffd700' };
+        if (score >= 1000) return { name: '白银', level: 3, color: '#c0c0c0' };
+        if (score >= 800) return { name: '青铜', level: 2, color: '#cd7f32' };
+        return { name: '新手', level: 1, color: '#8b4513' };
+    }
+
+    // 获取玩家称号
+    getPlayerTitle(rank, score) {
+        // 根据排名获取称号
+        if (rank === 1) return '棋圣';
+        if (rank === 2) return '棋王';
+        if (rank === 3) return '神秘黑马';
+        
+        // 根据段位获取称号
+        if (score >= 1800) return '五子王者';
+        if (score >= 1600) return '钻石高手';
+        if (score >= 1400) return '铂金棋士';
+        if (score >= 1200) return '黄金选手';
+        
+        return '';
+    }
 }
 
 // 创建全局游戏实例，以便在HTML中调用
