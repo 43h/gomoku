@@ -782,7 +782,7 @@ class GomokuGame {
             playerElement.innerHTML = `
                 <div class="rank">${index + 1}</div>
                 <div class="player-name">
-                    ${player.username} 
+                    ${player.username} </br>
                     ${title ? `<span class="title">${title}</span>` : ''}
                     <span class="status ${statusClass}">${statusText}</span>
                 </div>
