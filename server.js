@@ -71,6 +71,8 @@ function updateUserStats(username, isBlack, isWin, opponentScore = 1100) {
     const stats = getUserStats(username);
     const playerScore = stats.score;
     
+    console.log(`开始更新用户积分: ${username}, 当前积分: ${playerScore}, ${isBlack ? '黑子' : '白子'}, ${isWin ? '胜利' : '失败'}`);
+    
     // 计算积分变化
     const scoreChange = calculateScoreChange(playerScore, opponentScore, isWin);
     
@@ -148,7 +150,7 @@ function getTitle(rank, username, allPlayers) {
     // 根据排名获取称号
     if (rank === 1) return '棋圣';
     if (rank === 2) return '棋王';
-    if (rank === 3) return '神秘黑马';
+    if (rank === 3) return '黑马';
     
     // 根据段位获取称号
     const player = allPlayers.find(p => p.username === username);
@@ -320,7 +322,7 @@ const USER_STATUS = {
 
 // 游戏类
 class Game {
-    constructor() {
+    constructor(roomType = ROOM_TYPE.EXPERT) {
         this.board = Array(15).fill().map(() => Array(15).fill(0));
         this.currentPlayer = 1; // 1为黑子，2为白子
         this.winner = null;
@@ -328,9 +330,11 @@ class Game {
         this.moveCount = 0; // 总手数
         this.currentMoveTimer = null; // 当前落子计时器
         this.currentTimerInterval = null; // 计时器间隔
-        this.moveTimeLimit = 60; // 每步60秒限制
-        this.currentTimeLeft = 60; // 当前剩余时间
+        this.moveTimeLimit = 30; // 每步30秒限制
+        this.currentTimeLeft = 30; // 当前剩余时间
         this.timerStartTime = null; // 计时器开始时间
+        this.roomType = roomType; // 房间类型
+        this.enableForbiddenMoves = roomType === ROOM_TYPE.EXPERT; // 只有高手房启用禁手规则
     }
 
     makeMove(row, col, player) {
@@ -338,8 +342,8 @@ class Game {
             return false;
         }
         
-        // 检查黑子（玩家1）的禁手
-        if (player === 1) {
+        // 只有高手房才检查黑子（玩家1）的禁手
+        if (player === 1 && this.enableForbiddenMoves) {
             const forbiddenResult = this.checkForbiddenMoves(row, col, player);
             if (forbiddenResult.isForbidden) {
                 return { forbidden: true, reason: forbiddenResult.reason };
@@ -673,10 +677,17 @@ class Game {
     }
 }
 
+// 房间类型枚举
+const ROOM_TYPE = {
+    NOVICE: 'novice',   // 新手房
+    EXPERT: 'expert'    // 高手房
+};
+
 // 房间类
 class Room {
-    constructor(id) {
+    constructor(id, type = ROOM_TYPE.EXPERT) {
         this.id = id;
+        this.type = type; // 房间类型：新手房或高手房
         this.players = [];
         this.spectators = []; // 观战者列表
         this.status = ROOM_STATUS.WAITING;
@@ -688,6 +699,7 @@ class Room {
         this.gameResult = null; // 游戏结果
         this.hasAI = false; // 是否包含AI玩家
         this.aiPlayer = null; // AI玩家实例
+        this.statsUpdated = false; // 防止重复更新积分的标志
     }
 
     addPlayer(socket, username) {
@@ -799,6 +811,7 @@ class Room {
     getRoomInfo() {
         return {
             id: this.id,
+            type: this.type,
             status: this.status,
             playersCount: this.players.length,
             spectatorsCount: this.spectators.length,
@@ -840,8 +853,8 @@ class Room {
             }, 2000); // AI思考2秒
         }
         
-        // 30秒倒计时选择先手
-        let countdown = 30;
+        // 3秒倒计时选择先手
+        let countdown = 3;
         this.choiceInterval = setInterval(() => {
             // 检查是否还有足够的玩家
             if (this.players.length < 2) {
@@ -923,7 +936,7 @@ class Room {
     startGame() {
         console.log(`开始游戏，房间ID: ${this.id}`);
         this.status = ROOM_STATUS.PLAYING;
-        this.game = new Game();
+        this.game = new Game(this.type);
         
         // 如果有AI玩家，创建AI实例
         if (this.hasAI) {
@@ -940,6 +953,7 @@ class Room {
                 player.socket.emit('game-start', {
                     role: role,
                     isYourTurn: role === 'black',
+                    roomType: this.type,
                     players: this.players.map(p => ({
                         username: p.username,
                         role: this.playerRoles[p.socket.id]
@@ -969,7 +983,9 @@ class Room {
         // 如果AI是黑子（先手），让AI立即落子
         if (this.hasAI && this.playerRoles['ai_player'] === 'black') {
             setTimeout(() => {
-                this.makeAIMove();
+                if (this.game) {
+                    this.makeAIMove();
+                }
             }, 1000);
         }
     }
@@ -985,7 +1001,9 @@ class Room {
             
             if (isAITurn) {
                 // 如果轮到AI，直接触发AI落子
-                this.makeAIMove();
+                if (this.game) {
+                    this.makeAIMove();
+                }
                 return;
             }
         }
@@ -999,6 +1017,11 @@ class Room {
         
         // 设置每秒更新的间隔
         this.game.currentTimerInterval = setInterval(() => {
+            // 检查游戏是否仍然存在
+            if (!this.game) {
+                return;
+            }
+            
             timeLeft--;
             this.game.currentTimeLeft = timeLeft;
             this.broadcastToAll('move-timer-tick', { timeLeft });
@@ -1011,6 +1034,9 @@ class Room {
         
         // 设置超时处理
         this.game.currentMoveTimer = setTimeout(() => {
+            if (!this.game) {
+                return;
+            }
             this.game.clearMoveTimer();
             this.handleMoveTimeout();
         }, this.game.moveTimeLimit * 1000);
@@ -1059,8 +1085,8 @@ class Room {
         
         this.gameResult = gameResult;
         
-        // 更新胜率统计（排除AI对战）
-        if (winnerPlayer && loserPlayer && !this.hasAI) {
+        // 更新胜率统计（排除AI对战，且防止重复更新）
+        if (winnerPlayer && loserPlayer && !this.hasAI && !this.statsUpdated) {
             const winnerIsBlack = this.playerRoles[winnerId] === 'black';
             const loserIsBlack = !winnerIsBlack;
             
@@ -1068,11 +1094,21 @@ class Room {
             const winnerScore = getUserStats(winnerPlayer.username).score;
             const loserScore = getUserStats(loserPlayer.username).score;
             
+            console.log(`游戏结束前积分: ${winnerPlayer.username}=${winnerScore}, ${loserPlayer.username}=${loserScore}`);
+            
             // 更新胜者胜率（传递败者分数）
             updateUserStats(winnerPlayer.username, winnerIsBlack, true, loserScore);
             // 更新败者胜率（传递胜者分数）
             updateUserStats(loserPlayer.username, loserIsBlack, false, winnerScore);
             
+            // 标记积分已更新，防止重复更新
+            this.statsUpdated = true;
+            
+            // 获取更新后的分数
+            const newWinnerScore = getUserStats(winnerPlayer.username).score;
+            const newLoserScore = getUserStats(loserPlayer.username).score;
+            
+            console.log(`积分更新完成: ${winnerPlayer.username}=${newWinnerScore}(+${newWinnerScore-winnerScore}), ${loserPlayer.username}=${newLoserScore}(${newLoserScore-loserScore})`);
             console.log(`胜率更新: ${winnerPlayer.username}(${winnerIsBlack ? '黑' : '白'}) 胜, ${loserPlayer.username}(${loserIsBlack ? '黑' : '白'}) 负`);
         }
         
@@ -1169,10 +1205,17 @@ class Room {
     resetForNewGame() {
         // 重置游戏状态但保持房间和玩家
         this.status = ROOM_STATUS.WAITING;
+        
+        // 清除游戏计时器（必须在设置game为null之前执行）
+        if (this.game) {
+            this.game.clearMoveTimer();
+        }
+        
         this.game = null;
         this.playerRoles = {};
         this.winner = null;
         this.gameResult = null;
+        this.statsUpdated = false; // 重置积分更新标志
         
         // 清除所有计时器
         if (this.choiceTimer) {
@@ -1249,6 +1292,11 @@ class Room {
         
         // 延迟1秒让AI思考，增加真实感
         setTimeout(() => {
+            // 检查游戏是否仍然存在
+            if (!this.game || !this.aiPlayer) {
+                return;
+            }
+            
             let aiMove = this.aiPlayer.getBestMove();
             let attempts = 0;
             const maxAttempts = 50; // 最多尝试50次
@@ -1551,10 +1599,12 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join-room', (data) => {
-        const { username, roomId } = data;
+        const { username, roomId, roomType } = data;
         
         if (!rooms.has(roomId)) {
-            rooms.set(roomId, new Room(roomId));
+            // 如果是新创建的房间，使用指定的房间类型，默认为高手房
+            const type = roomType || ROOM_TYPE.EXPERT;
+            rooms.set(roomId, new Room(roomId, type));
         }
         
         const room = rooms.get(roomId);
@@ -1565,6 +1615,7 @@ io.on('connection', (socket) => {
             
             socket.emit('joined-room', {
                 roomId,
+                roomType: room.type,
                 playersCount: room.players.length,
                 status: room.status
             });

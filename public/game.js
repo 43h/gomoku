@@ -39,6 +39,7 @@ class GomokuGame {
         this.screens = {
             login: document.getElementById('login-screen'),
             lobby: document.getElementById('lobby-screen'),
+            createRoom: document.getElementById('create-room-screen'),
             waiting: document.getElementById('waiting-screen'),
             choice: document.getElementById('choice-screen'),
             game: document.getElementById('game-screen')
@@ -60,6 +61,12 @@ class GomokuGame {
         this.createRoomBtn = document.getElementById('create-room-btn');
         this.refreshLobbyBtn = document.getElementById('refresh-lobby-btn');
 
+        // 创建房间界面元素
+        this.roomTypeOptions = document.querySelectorAll('.room-type-option');
+        this.confirmCreateBtn = document.getElementById('confirm-create-btn');
+        this.cancelCreateBtn = document.getElementById('cancel-create-btn');
+        this.selectedRoomType = null;
+
         // 用户战绩元素
         this.userStatsDiv = document.getElementById('user-stats');
         this.userScoreSpan = document.getElementById('user-score');
@@ -75,6 +82,7 @@ class GomokuGame {
 
         // 等待界面元素
         this.currentRoomIdSpan = document.getElementById('current-room-id');
+        this.roomTypeDisplaySpan = document.getElementById('room-type-display');
         this.player1NameSpan = document.getElementById('player1-name');
         this.player2NameSpan = document.getElementById('player2-name');
         this.waitingMessage = document.getElementById('waiting-message');
@@ -90,6 +98,7 @@ class GomokuGame {
         this.blackTurnIndicator = document.getElementById('black-turn');
         this.whiteTurnIndicator = document.getElementById('white-turn');
         this.gameMessage = document.getElementById('game-message');
+        this.roomRulesInfo = document.getElementById('room-rules-info');
         this.spectatorInfo = document.getElementById('spectator-info');
         this.moveCountSpan = document.getElementById('move-count');
         this.timerCountSpan = document.getElementById('timer-count');
@@ -231,11 +240,26 @@ class GomokuGame {
 
         // 大厅相关按钮
         this.createRoomBtn.addEventListener('click', () => {
-            this.createRoom();
+            this.showCreateRoomScreen();
         });
 
         this.refreshLobbyBtn.addEventListener('click', () => {
             this.refreshLobby();
+        });
+
+        // 创建房间界面事件
+        this.roomTypeOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                this.selectRoomType(option);
+            });
+        });
+
+        this.confirmCreateBtn.addEventListener('click', () => {
+            this.confirmCreateRoom();
+        });
+
+        this.cancelCreateBtn.addEventListener('click', () => {
+            this.showScreen('lobby');
         });
 
         // 回车键登录
@@ -363,6 +387,14 @@ class GomokuGame {
             console.log('收到 joined-room 事件:', data);
             this.roomId = data.roomId;
             this.currentRoomIdSpan.textContent = data.roomId;
+            
+            // 显示房间类型
+            if (data.roomType) {
+                const roomTypeText = data.roomType === 'novice' ? '新手房' : '高手房';
+                this.roomTypeDisplaySpan.textContent = roomTypeText;
+                this.roomTypeDisplaySpan.className = `room-type-badge ${data.roomType}`;
+            }
+            
             this.isSpectating = false;
             this.showScreen('waiting');
             
@@ -474,6 +506,15 @@ class GomokuGame {
             this.isSpectating = false;
             this.spectatorInfo.classList.remove('active');
             
+            // 显示房间规则信息
+            if (data.roomType) {
+                const rulesText = data.roomType === 'novice' 
+                    ? '新手房：30秒时间限制，无禁手规则' 
+                    : '高手房：30秒时间限制，完整禁手规则';
+                this.roomRulesInfo.textContent = rulesText;
+                this.roomRulesInfo.className = `room-rules-info ${data.roomType}`;
+            }
+            
             // 重置手数和清除威胁标记
             this.moveCountSpan.textContent = '0';
             this.clearThreatMarkers();
@@ -537,6 +578,14 @@ class GomokuGame {
         this.socket.on('game-end', (data) => {
             this.stopTimer();
             this.showResultModal(data);
+            
+            // 游戏结束后稍等一下再获取用户统计信息，确保服务器端积分更新完成
+            setTimeout(() => {
+                if (this.username) {
+                    this.socket.emit('get-user-stats', { username: this.username });
+                    this.socket.emit('get-leaderboard');
+                }
+            }, 500); // 延迟500毫秒
         });
 
         this.socket.on('player-left', (data) => {
@@ -620,6 +669,39 @@ class GomokuGame {
         this.socket.emit('get-leaderboard');
     }
 
+    showCreateRoomScreen() {
+        this.showScreen('createRoom');
+        // 重置选择状态
+        this.roomTypeOptions.forEach(option => option.classList.remove('selected'));
+        this.selectedRoomType = null;
+        this.confirmCreateBtn.disabled = true;
+    }
+
+    selectRoomType(selectedOption) {
+        // 移除所有选中状态
+        this.roomTypeOptions.forEach(option => option.classList.remove('selected'));
+        // 添加选中状态
+        selectedOption.classList.add('selected');
+        // 保存选择的类型
+        this.selectedRoomType = selectedOption.dataset.type;
+        // 启用确认按钮
+        this.confirmCreateBtn.disabled = false;
+    }
+
+    confirmCreateRoom() {
+        if (!this.selectedRoomType) {
+            alert('请选择房间类型');
+            return;
+        }
+        
+        const roomId = this.generateRoomId();
+        this.socket.emit('join-room', { 
+            username: this.username, 
+            roomId: roomId,
+            roomType: this.selectedRoomType
+        });
+    }
+
     createRoom() {
         const roomId = this.generateRoomId();
         this.socket.emit('join-room', { username: this.username, roomId });
@@ -646,9 +728,13 @@ class GomokuGame {
                 'finished': '已结束'
             }[room.status];
             
+            // 房间类型显示
+            let roomTypeText = room.type === 'novice' ? '新手房' : '高手房';
+            let roomTypeBadge = `<span class="room-type-badge ${room.type}">${roomTypeText}</span>`;
+            
             roomElement.innerHTML = `
                 <div class="room-header">
-                    <div class="room-id">房间: ${room.id}</div>
+                    <div class="room-id">房间: ${room.id}${roomTypeBadge}</div>
                     <div class="room-status ${statusClass}">${statusText}</div>
                 </div>
                 <div class="room-info">
@@ -782,7 +868,7 @@ class GomokuGame {
             playerElement.innerHTML = `
                 <div class="rank">${index + 1}</div>
                 <div class="player-name">
-                    ${player.username} </br>
+                    ${player.username}<br>
                     ${title ? `<span class="title">${title}</span>` : ''}
                     <span class="status ${statusClass}">${statusText}</span>
                 </div>
@@ -1237,6 +1323,12 @@ class GomokuGame {
         // 返回大厅
         this.showScreen('lobby');
         this.refreshLobby();
+        
+        // 重新获取用户统计信息和排行榜
+        if (this.username) {
+            this.socket.emit('get-user-stats', { username: this.username });
+            this.socket.emit('get-leaderboard');
+        }
     }
 
     restartGame() {
@@ -1332,7 +1424,7 @@ class GomokuGame {
         // 根据排名获取称号
         if (rank === 1) return '棋圣';
         if (rank === 2) return '棋王';
-        if (rank === 3) return '神秘黑马';
+        if (rank === 3) return '黑马';
         
         // 根据段位获取称号
         if (score >= 1800) return '五子王者';
