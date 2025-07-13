@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>云盾五子棋对战</title>
+    <title>云盾五子棋对战平台</title>
     <link rel="stylesheet" href="style.css">
     <script src="/socket.io/socket.io.js"></script>
 </head>
@@ -12,7 +12,7 @@
         <!-- 登录界面 -->
         <div id="login-screen" class="screen active">
             <div class="login-form">
-                <h1>云盾五子棋对战</h1>
+                <h1>云盾五子棋对战平台</h1>
                 <div class="form-group">
                     <input type="text" id="username" placeholder="请输入用户名" maxlength="20">
                 </div>
@@ -140,6 +140,9 @@
                     </div>
                 </div>
                 <div id="waiting-message" class="message">等待其他玩家加入...</div>
+                <div class="waiting-actions">
+                    <button id="back-to-lobby-from-waiting" class="btn secondary">返回大厅</button>
+                </div>
             </div>
         </div>
 

@@ -71,8 +71,6 @@ function updateUserStats(username, isBlack, isWin, opponentScore = 1100) {
     const stats = getUserStats(username);
     const playerScore = stats.score;
     
-    console.log(`开始更新用户积分: ${username}, 当前积分: ${playerScore}, ${isBlack ? '黑子' : '白子'}, ${isWin ? '胜利' : '失败'}`);
-    
     // 计算积分变化
     const scoreChange = calculateScoreChange(playerScore, opponentScore, isWin);
     
@@ -150,7 +148,7 @@ function getTitle(rank, username, allPlayers) {
     // 根据排名获取称号
     if (rank === 1) return '棋圣';
     if (rank === 2) return '棋王';
-    if (rank === 3) return '黑马';
+    if (rank === 3) return '神秘黑马';
     
     // 根据段位获取称号
     const player = allPlayers.find(p => p.username === username);
@@ -322,7 +320,7 @@ const USER_STATUS = {
 
 // 游戏类
 class Game {
-    constructor(roomType = ROOM_TYPE.EXPERT) {
+    constructor() {
         this.board = Array(15).fill().map(() => Array(15).fill(0));
         this.currentPlayer = 1; // 1为黑子，2为白子
         this.winner = null;
@@ -333,21 +331,16 @@ class Game {
         this.moveTimeLimit = 30; // 每步30秒限制
         this.currentTimeLeft = 30; // 当前剩余时间
         this.timerStartTime = null; // 计时器开始时间
-        this.roomType = roomType; // 房间类型
-        this.enableForbiddenMoves = roomType === ROOM_TYPE.EXPERT; // 只有高手房启用禁手规则
     }
 
     makeMove(row, col, player) {
-        if (this.board[row][col] !== 0 || this.winner) {
+        // 检查坐标是否在棋盘范围内
+        if (row < 0 || row >= 15 || col < 0 || col >= 15) {
             return false;
         }
         
-        // 只有高手房才检查黑子（玩家1）的禁手
-        if (player === 1 && this.enableForbiddenMoves) {
-            const forbiddenResult = this.checkForbiddenMoves(row, col, player);
-            if (forbiddenResult.isForbidden) {
-                return { forbidden: true, reason: forbiddenResult.reason };
-            }
+        if (this.board[row][col] !== 0 || this.winner) {
+            return false;
         }
         
         this.board[row][col] = player;
@@ -417,277 +410,12 @@ class Game {
         }
         return false;
     }
-
-    // 检查禁手
-    checkForbiddenMoves(row, col, player) {
-        // 临时放置棋子
-        this.board[row][col] = player;
-        
-        let result = { isForbidden: false, reason: '' };
-        
-        // 检查长连禁手（超过5个连子）
-        if (this.checkOverline(row, col, player)) {
-            result = { isForbidden: true, reason: '长连禁手' };
-        }
-        // 检查双三禁手
-        else if (this.checkDoubleThree(row, col, player)) {
-            result = { isForbidden: true, reason: '三三禁手' };
-        }
-        // 检查双四禁手
-        else if (this.checkDoubleFour(row, col, player)) {
-            result = { isForbidden: true, reason: '四四禁手' };
-        }
-        
-        // 移除临时棋子
-        this.board[row][col] = 0;
-        
-        return result;
-    }
-
-    // 检查长连禁手（超过5个连子）
-    checkOverline(row, col, player) {
-        const directions = [
-            [0, 1], [1, 0], [1, 1], [1, -1]
-        ];
-
-        for (let [dx, dy] of directions) {
-            let count = 1;
-            
-            // 检查正方向
-            for (let i = 1; i < 15; i++) {
-                const newRow = row + dx * i;
-                const newCol = col + dy * i;
-                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
-                    this.board[newRow][newCol] !== player) {
-                    break;
-                }
-                count++;
-            }
-            
-            // 检查反方向
-            for (let i = 1; i < 15; i++) {
-                const newRow = row - dx * i;
-                const newCol = col - dy * i;
-                if (newRow < 0 || newRow >= 15 || newCol < 0 || newCol >= 15 || 
-                    this.board[newRow][newCol] !== player) {
-                    break;
-                }
-                count++;
-            }
-            
-            // 如果连子数量超过5个，则为长连禁手
-            if (count > 5) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // 检查双三禁手
-    checkDoubleThree(row, col, player) {
-        const directions = [
-            [0, 1], [1, 0], [1, 1], [1, -1]
-        ];
-        
-        let threeCount = 0;
-        
-        for (let [dx, dy] of directions) {
-            if (this.isLiveThree(row, col, dx, dy, player)) {
-                threeCount++;
-            }
-        }
-        
-        return threeCount >= 2;
-    }
-
-    // 检查双四禁手
-    checkDoubleFour(row, col, player) {
-        const directions = [
-            [0, 1], [1, 0], [1, 1], [1, -1]
-        ];
-        
-        let fourCount = 0;
-        
-        for (let [dx, dy] of directions) {
-            if (this.isLiveFour(row, col, dx, dy, player) || this.isBlockedFour(row, col, dx, dy, player)) {
-                fourCount++;
-            }
-        }
-        
-        return fourCount >= 2;
-    }
-
-    // 检查是否为活三
-    isLiveThree(row, col, dx, dy, player) {
-        // 检查以(row,col)为中心，方向为(dx,dy)的活三
-        const patterns = [
-            [-1, 0, 1, 2],  // _XXX
-            [-2, -1, 0, 1], // _XXX
-            [0, 1, 2, 3],   // XXX_
-            [-1, 0, 1, 3],  // _XX_X
-            [-1, 0, 2, 3],  // _X_XX
-        ];
-        
-        for (let pattern of patterns) {
-            let isPattern = true;
-            let emptyCount = 0;
-            let playerCount = 0;
-            
-            for (let i = 0; i < pattern.length; i++) {
-                const checkRow = row + pattern[i] * dx;
-                const checkCol = col + pattern[i] * dy;
-                
-                if (checkRow < 0 || checkRow >= 15 || checkCol < 0 || checkCol >= 15) {
-                    isPattern = false;
-                    break;
-                }
-                
-                const cell = this.board[checkRow][checkCol];
-                if (cell === player) {
-                    playerCount++;
-                } else if (cell === 0) {
-                    emptyCount++;
-                } else {
-                    isPattern = false;
-                    break;
-                }
-            }
-            
-            // 活三的条件：3个己方棋子，1个空位，两端都是空的
-            if (isPattern && playerCount === 3 && emptyCount === 1) {
-                // 检查两端是否为空
-                const leftRow = row + (pattern[0] - 1) * dx;
-                const leftCol = col + (pattern[0] - 1) * dy;
-                const rightRow = row + (pattern[pattern.length - 1] + 1) * dx;
-                const rightCol = col + (pattern[pattern.length - 1] + 1) * dy;
-                
-                const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
-                                 this.board[leftRow][leftCol] === 0);
-                const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
-                                  this.board[rightRow][rightCol] === 0);
-                
-                if (leftEmpty && rightEmpty) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
-
-    // 检查是否为活四
-    isLiveFour(row, col, dx, dy, player) {
-        // 简化的活四检测：4个连续的己方棋子，两端都是空的
-        let count = 1;
-        let leftPos = 0, rightPos = 0;
-        
-        // 向左计数
-        for (let i = 1; i < 5; i++) {
-            const checkRow = row - i * dx;
-            const checkCol = col - i * dy;
-            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
-                this.board[checkRow][checkCol] === player) {
-                count++;
-                leftPos = i;
-            } else {
-                break;
-            }
-        }
-        
-        // 向右计数
-        for (let i = 1; i < 5; i++) {
-            const checkRow = row + i * dx;
-            const checkCol = col + i * dy;
-            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
-                this.board[checkRow][checkCol] === player) {
-                count++;
-                rightPos = i;
-            } else {
-                break;
-            }
-        }
-        
-        if (count === 4) {
-            // 检查两端是否为空
-            const leftRow = row - (leftPos + 1) * dx;
-            const leftCol = col - (leftPos + 1) * dy;
-            const rightRow = row + (rightPos + 1) * dx;
-            const rightCol = col + (rightPos + 1) * dy;
-            
-            const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
-                             this.board[leftRow][leftCol] === 0);
-            const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
-                              this.board[rightRow][rightCol] === 0);
-            
-            return leftEmpty && rightEmpty;
-        }
-        
-        return false;
-    }
-
-    // 检查是否为冲四
-    isBlockedFour(row, col, dx, dy, player) {
-        // 简化的冲四检测：4个连续的己方棋子，一端是空的，另一端被堵
-        let count = 1;
-        let leftPos = 0, rightPos = 0;
-        
-        // 向左计数
-        for (let i = 1; i < 5; i++) {
-            const checkRow = row - i * dx;
-            const checkCol = col - i * dy;
-            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
-                this.board[checkRow][checkCol] === player) {
-                count++;
-                leftPos = i;
-            } else {
-                break;
-            }
-        }
-        
-        // 向右计数
-        for (let i = 1; i < 5; i++) {
-            const checkRow = row + i * dx;
-            const checkCol = col + i * dy;
-            if (checkRow >= 0 && checkRow < 15 && checkCol >= 0 && checkCol < 15 && 
-                this.board[checkRow][checkCol] === player) {
-                count++;
-                rightPos = i;
-            } else {
-                break;
-            }
-        }
-        
-        if (count === 4) {
-            // 检查两端的情况
-            const leftRow = row - (leftPos + 1) * dx;
-            const leftCol = col - (leftPos + 1) * dy;
-            const rightRow = row + (rightPos + 1) * dx;
-            const rightCol = col + (rightPos + 1) * dy;
-            
-            const leftEmpty = (leftRow >= 0 && leftRow < 15 && leftCol >= 0 && leftCol < 15 && 
-                             this.board[leftRow][leftCol] === 0);
-            const rightEmpty = (rightRow >= 0 && rightRow < 15 && rightCol >= 0 && rightCol < 15 && 
-                              this.board[rightRow][rightCol] === 0);
-            
-            // 冲四：一端空，另一端不空
-            return (leftEmpty && !rightEmpty) || (!leftEmpty && rightEmpty);
-        }
-        
-        return false;
-    }
 }
-
-// 房间类型枚举
-const ROOM_TYPE = {
-    NOVICE: 'novice',   // 新手房
-    EXPERT: 'expert'    // 高手房
-};
 
 // 房间类
 class Room {
-    constructor(id, type = ROOM_TYPE.EXPERT) {
+    constructor(id) {
         this.id = id;
-        this.type = type; // 房间类型：新手房或高手房
         this.players = [];
         this.spectators = []; // 观战者列表
         this.status = ROOM_STATUS.WAITING;
@@ -697,9 +425,6 @@ class Room {
         this.playerRoles = {}; // {socketId: 'black' | 'white'}
         this.winner = null;
         this.gameResult = null; // 游戏结果
-        this.hasAI = false; // 是否包含AI玩家
-        this.aiPlayer = null; // AI玩家实例
-        this.statsUpdated = false; // 防止重复更新积分的标志
     }
 
     addPlayer(socket, username) {
@@ -811,7 +536,6 @@ class Room {
     getRoomInfo() {
         return {
             id: this.id,
-            type: this.type,
             status: this.status,
             playersCount: this.players.length,
             spectatorsCount: this.spectators.length,
@@ -838,20 +562,6 @@ class Room {
                 p.socket.emit('choice-phase-started');
             }
         });
-        
-        // 如果有AI玩家，AI随机选择是否先手（50%概率）
-        if (this.hasAI) {
-            const aiWantsFirst = Math.random() < 0.5;
-            setTimeout(() => {
-                if (aiWantsFirst) {
-                    const aiPlayer = this.players.find(p => p.socket.id === 'ai_player');
-                    if (aiPlayer) {
-                        this.playerChooseFirst(aiPlayer.socket);
-                    }
-                }
-                // 如果AI不选择先手，等待人类玩家选择或超时随机分配
-            }, 2000); // AI思考2秒
-        }
         
         // 3秒倒计时选择先手
         let countdown = 3;
@@ -887,7 +597,7 @@ class Room {
                 this.choiceInterval = null;
             }
             this.randomAssignRoles();
-        }, 30000);
+        }, 3000);
     }
 
     playerChooseFirst(socket) {
@@ -936,15 +646,7 @@ class Room {
     startGame() {
         console.log(`开始游戏，房间ID: ${this.id}`);
         this.status = ROOM_STATUS.PLAYING;
-        this.game = new Game(this.type);
-        
-        // 如果有AI玩家，创建AI实例
-        if (this.hasAI) {
-            const aiRole = this.playerRoles['ai_player']; // 'black' or 'white'
-            const aiPlayerNumber = aiRole === 'black' ? 1 : 2;
-            this.aiPlayer = new AIPlayer(this.game, aiPlayerNumber);
-            console.log(`AI玩家创建完成，角色: ${aiRole} (${aiPlayerNumber})`);
-        }
+        this.game = new Game();
         
         this.players.forEach(player => {
             const role = this.playerRoles[player.socket.id];
@@ -953,7 +655,6 @@ class Room {
                 player.socket.emit('game-start', {
                     role: role,
                     isYourTurn: role === 'black',
-                    roomType: this.type,
                     players: this.players.map(p => ({
                         username: p.username,
                         role: this.playerRoles[p.socket.id]
@@ -979,34 +680,11 @@ class Room {
         // 开始第一步倒计时（黑子先手）
         this.startMoveTimer();
         this.broadcastRoomUpdate();
-        
-        // 如果AI是黑子（先手），让AI立即落子
-        if (this.hasAI && this.playerRoles['ai_player'] === 'black') {
-            setTimeout(() => {
-                if (this.game) {
-                    this.makeAIMove();
-                }
-            }, 1000);
-        }
     }
 
     startMoveTimer() {
         // 清除之前的计时器
         this.game.clearMoveTimer();
-        
-        // 检查是否轮到AI玩家
-        if (this.hasAI) {
-            const currentPlayerRole = this.game.currentPlayer === 1 ? 'black' : 'white';
-            const isAITurn = this.playerRoles['ai_player'] === currentPlayerRole;
-            
-            if (isAITurn) {
-                // 如果轮到AI，直接触发AI落子
-                if (this.game) {
-                    this.makeAIMove();
-                }
-                return;
-            }
-        }
         
         let timeLeft = this.game.moveTimeLimit;
         this.game.currentTimeLeft = timeLeft;
@@ -1017,11 +695,6 @@ class Room {
         
         // 设置每秒更新的间隔
         this.game.currentTimerInterval = setInterval(() => {
-            // 检查游戏是否仍然存在
-            if (!this.game) {
-                return;
-            }
-            
             timeLeft--;
             this.game.currentTimeLeft = timeLeft;
             this.broadcastToAll('move-timer-tick', { timeLeft });
@@ -1034,9 +707,6 @@ class Room {
         
         // 设置超时处理
         this.game.currentMoveTimer = setTimeout(() => {
-            if (!this.game) {
-                return;
-            }
             this.game.clearMoveTimer();
             this.handleMoveTimeout();
         }, this.game.moveTimeLimit * 1000);
@@ -1085,8 +755,8 @@ class Room {
         
         this.gameResult = gameResult;
         
-        // 更新胜率统计（排除AI对战，且防止重复更新）
-        if (winnerPlayer && loserPlayer && !this.hasAI && !this.statsUpdated) {
+        // 更新胜率统计
+        if (winnerPlayer && loserPlayer) {
             const winnerIsBlack = this.playerRoles[winnerId] === 'black';
             const loserIsBlack = !winnerIsBlack;
             
@@ -1094,21 +764,11 @@ class Room {
             const winnerScore = getUserStats(winnerPlayer.username).score;
             const loserScore = getUserStats(loserPlayer.username).score;
             
-            console.log(`游戏结束前积分: ${winnerPlayer.username}=${winnerScore}, ${loserPlayer.username}=${loserScore}`);
-            
             // 更新胜者胜率（传递败者分数）
             updateUserStats(winnerPlayer.username, winnerIsBlack, true, loserScore);
             // 更新败者胜率（传递胜者分数）
             updateUserStats(loserPlayer.username, loserIsBlack, false, winnerScore);
             
-            // 标记积分已更新，防止重复更新
-            this.statsUpdated = true;
-            
-            // 获取更新后的分数
-            const newWinnerScore = getUserStats(winnerPlayer.username).score;
-            const newLoserScore = getUserStats(loserPlayer.username).score;
-            
-            console.log(`积分更新完成: ${winnerPlayer.username}=${newWinnerScore}(+${newWinnerScore-winnerScore}), ${loserPlayer.username}=${newLoserScore}(${newLoserScore-loserScore})`);
             console.log(`胜率更新: ${winnerPlayer.username}(${winnerIsBlack ? '黑' : '白'}) 胜, ${loserPlayer.username}(${loserIsBlack ? '黑' : '白'}) 负`);
         }
         
@@ -1192,7 +852,7 @@ class Room {
                 );
                 this.endGame(winnerId, 'normal');
             } else {
-                // 开始下一步倒计时（内部会检查是否是AI的回合）
+                // 开始下一步倒计时
                 this.startMoveTimer();
             }
             
@@ -1205,17 +865,10 @@ class Room {
     resetForNewGame() {
         // 重置游戏状态但保持房间和玩家
         this.status = ROOM_STATUS.WAITING;
-        
-        // 清除游戏计时器（必须在设置game为null之前执行）
-        if (this.game) {
-            this.game.clearMoveTimer();
-        }
-        
         this.game = null;
         this.playerRoles = {};
         this.winner = null;
         this.gameResult = null;
-        this.statsUpdated = false; // 重置积分更新标志
         
         // 清除所有计时器
         if (this.choiceTimer) {
@@ -1233,259 +886,6 @@ class Room {
         }
         
         this.broadcastRoomUpdate();
-    }
-
-    addAIPlayer() {
-        if (this.players.length >= 2) {
-            return false;
-        }
-        
-        // 创建一个虚拟的AI玩家对象
-        const aiPlayerObj = {
-            socket: { id: 'ai_player', emit: () => {}, to: () => ({ emit: () => {} }) },
-            username: 'AI玩家'
-        };
-        
-        this.players.push(aiPlayerObj);
-        this.hasAI = true;
-        
-        if (this.players.length === 2) {
-            this.startChoicePhase();
-        }
-        
-        this.broadcastRoomUpdate();
-        return true;
-    }
-
-    // AI玩家逻辑
-    playAI() {
-        if (!this.hasAI || this.game.currentPlayer !== 2) {
-            return;
-        }
-        
-        const aiPlayer = this.players.find(p => p.socket.id === 'ai_player');
-        if (!aiPlayer) {
-            return;
-        }
-        
-        // 创建AI实例
-        const ai = new AIPlayer(this.game, 2);
-        
-        // 获取最佳落子
-        const bestMove = ai.getBestMove();
-        if (bestMove) {
-            const { row, col } = bestMove;
-            this.makeMove(aiPlayer.socket, row, col);
-        }
-    }
-
-    makeAIMove() {
-        if (!this.hasAI || !this.aiPlayer || !this.game) return;
-        
-        const currentPlayerRole = this.game.currentPlayer === 1 ? 'black' : 'white';
-        const isAITurn = this.playerRoles['ai_player'] === currentPlayerRole;
-        
-        if (!isAITurn) return;
-        
-        // 清除之前回合的禁手位置记录
-        this.aiPlayer.clearForbiddenMoves();
-        
-        // 延迟1秒让AI思考，增加真实感
-        setTimeout(() => {
-            // 检查游戏是否仍然存在
-            if (!this.game || !this.aiPlayer) {
-                return;
-            }
-            
-            let aiMove = this.aiPlayer.getBestMove();
-            let attempts = 0;
-            const maxAttempts = 50; // 最多尝试50次
-            
-            // 如果AI是黑子，需要检查禁手
-            while (aiMove && attempts < maxAttempts) {
-                // 清除当前倒计时
-                this.game.clearMoveTimer();
-                
-                const moveResult = this.game.makeMove(aiMove.row, aiMove.col, this.aiPlayer.player);
-                
-                // 如果是禁手，AI重新选择
-                if (moveResult && moveResult.forbidden) {
-                    console.log(`AI遇到禁手: ${moveResult.reason}，重新选择落子位置`);
-                    // 将这个位置标记为不可用，重新获取移动
-                    this.aiPlayer.addForbiddenMove(aiMove.row, aiMove.col);
-                    aiMove = this.aiPlayer.getBestMove();
-                    attempts++;
-                    continue;
-                }
-                
-                if (moveResult === true) {
-                    const lastMove = this.game.moveHistory[this.game.moveHistory.length - 1];
-                    
-                    const moveData = {
-                        row: aiMove.row,
-                        col: aiMove.col,
-                        player: this.aiPlayer.player,
-                        nextPlayer: this.game.currentPlayer,
-                        winner: this.game.winner,
-                        moveCount: this.game.moveCount,
-                        moveNumber: lastMove.moveNumber
-                    };
-                    
-                    // 广播移动到所有玩家和观战者
-                    this.broadcastToAll('move-made', moveData);
-                    
-                    if (this.game.winner) {
-                        const winnerRole = this.game.winner === 1 ? 'black' : 'white';
-                        const winnerId = this.playerRoles['ai_player'] === winnerRole ? 'ai_player' : 
-                            Object.keys(this.playerRoles).find(id => this.playerRoles[id] === winnerRole);
-                        this.endGame(winnerId, 'normal');
-                    } else {
-                        // 开始下一步倒计时
-                        this.startMoveTimer();
-                    }
-                    return; // 成功落子，退出
-                }
-                
-                // 如果移动失败（位置已被占用等），重新选择
-                this.aiPlayer.addForbiddenMove(aiMove.row, aiMove.col);
-                aiMove = this.aiPlayer.getBestMove();
-                attempts++;
-            }
-            
-            // 如果AI无法找到合适的落子位置，超时败北
-            if (attempts >= maxAttempts) {
-                console.log('AI无法找到合适的落子位置，超时败北');
-                this.handleMoveTimeout();
-            }
-        }, 1000);
-    }
-}
-
-// AI玩家类
-class AIPlayer {
-    constructor(game, player) {
-        this.game = game;
-        this.player = player; // 1 or 2
-        this.difficulty = 'medium'; // easy, medium, hard
-        this.forbiddenMoves = new Set(); // 存储当前回合禁止的位置
-    }
-
-    // 添加禁手位置
-    addForbiddenMove(row, col) {
-        this.forbiddenMoves.add(`${row},${col}`);
-    }
-
-    // 清除禁手位置（新回合开始时调用）
-    clearForbiddenMoves() {
-        this.forbiddenMoves.clear();
-    }
-
-    // 获取最佳落子位置
-    getBestMove() {
-        const availableMoves = this.getAvailableMoves();
-        if (availableMoves.length === 0) return null;
-
-        // 简单AI：随机选择 + 基本策略
-        switch (this.difficulty) {
-            case 'easy':
-                return this.getRandomMove(availableMoves);
-            case 'medium':
-                return this.getMediumMove(availableMoves);
-            case 'hard':
-                return this.getHardMove(availableMoves);
-            default:
-                return this.getRandomMove(availableMoves);
-        }
-    }
-
-    getAvailableMoves() {
-        const moves = [];
-        for (let row = 0; row < 15; row++) {
-            for (let col = 0; col < 15; col++) {
-                if (this.game.board[row][col] === 0 && !this.forbiddenMoves.has(`${row},${col}`)) {
-                    moves.push({ row, col });
-                }
-            }
-        }
-        return moves;
-    }
-
-    getRandomMove(availableMoves) {
-        return availableMoves[Math.floor(Math.random() * availableMoves.length)];
-    }
-
-    getMediumMove(availableMoves) {
-        // 中等难度：优先考虑中心区域和已有棋子周围
-        const centerMoves = availableMoves.filter(move => {
-            const distanceFromCenter = Math.abs(move.row - 7) + Math.abs(move.col - 7);
-            return distanceFromCenter <= 6;
-        });
-
-        const nearExistingMoves = availableMoves.filter(move => {
-            return this.hasAdjacentPiece(move.row, move.col);
-        });
-
-        if (nearExistingMoves.length > 0) {
-            return nearExistingMoves[Math.floor(Math.random() * nearExistingMoves.length)];
-        }
-
-        if (centerMoves.length > 0) {
-            return centerMoves[Math.floor(Math.random() * centerMoves.length)];
-        }
-
-        return this.getRandomMove(availableMoves);
-    }
-
-    getHardMove(availableMoves) {
-        // 困难难度：使用简单的评估函数
-        let bestMove = null;
-        let bestScore = -Infinity;
-
-        for (let move of availableMoves) {
-            const score = this.evaluateMove(move.row, move.col);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove = move;
-            }
-        }
-
-        return bestMove || this.getRandomMove(availableMoves);
-    }
-
-    hasAdjacentPiece(row, col) {
-        const directions = [
-            [-1, -1], [-1, 0], [-1, 1],
-            [0, -1],           [0, 1],
-            [1, -1],  [1, 0],  [1, 1]
-        ];
-
-        for (let [dx, dy] of directions) {
-            const newRow = row + dx;
-            const newCol = col + dy;
-            
-            if (newRow >= 0 && newRow < 15 && newCol >= 0 && newCol < 15) {
-                if (this.game.board[newRow][newCol] !== 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    evaluateMove(row, col) {
-        // 简单的评估函数
-        let score = 0;
-        
-        // 中心位置加分
-        const distanceFromCenter = Math.abs(row - 7) + Math.abs(col - 7);
-        score += (14 - distanceFromCenter) * 2;
-        
-        // 靠近已有棋子加分
-        if (this.hasAdjacentPiece(row, col)) {
-            score += 50;
-        }
-        
-        return score;
     }
 }
 
@@ -1513,6 +913,13 @@ io.on('connection', (socket) => {
     // 用户登录
     socket.on('user-login', (data) => {
         const { username, browserId } = data;
+        
+        // 检查用户是否已经在线
+        const existingUser = Array.from(users.values()).find(user => user.username === username);
+        if (existingUser) {
+            socket.emit('login-failed', { message: '该用户已经在线，请使用其他用户名' });
+            return;
+        }
         
         // 保存浏览器会话
         if (browserId) {
@@ -1599,12 +1006,10 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join-room', (data) => {
-        const { username, roomId, roomType } = data;
+        const { username, roomId } = data;
         
         if (!rooms.has(roomId)) {
-            // 如果是新创建的房间，使用指定的房间类型，默认为高手房
-            const type = roomType || ROOM_TYPE.EXPERT;
-            rooms.set(roomId, new Room(roomId, type));
+            rooms.set(roomId, new Room(roomId));
         }
         
         const room = rooms.get(roomId);
@@ -1615,7 +1020,6 @@ io.on('connection', (socket) => {
             
             socket.emit('joined-room', {
                 roomId,
-                roomType: room.type,
                 playersCount: room.players.length,
                 status: room.status
             });
