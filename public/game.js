@@ -78,6 +78,7 @@ class GomokuGame {
         this.player1NameSpan = document.getElementById('player1-name');
         this.player2NameSpan = document.getElementById('player2-name');
         this.waitingMessage = document.getElementById('waiting-message');
+        this.backToLobbyFromWaitingBtn = document.getElementById('back-to-lobby-from-waiting');
 
         // 选择界面元素
         this.countdownSpan = document.getElementById('countdown');
@@ -136,7 +137,7 @@ class GomokuGame {
 
     drawBoard(ctx) {
         const boardSize = this.gameBoard.width;
-        const cellSize = boardSize / this.boardSize;
+        const cellSize = boardSize / (this.boardSize + 1); // 为边缘留出空间
         
         // 清空画布
         ctx.clearRect(0, 0, boardSize, boardSize);
@@ -149,7 +150,8 @@ class GomokuGame {
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
         
-        for (let i = 0; i <= this.boardSize - 1; i++) {
+        // 绘制15x15的网格线（15条垂直线和15条水平线）
+        for (let i = 0; i < this.boardSize; i++) {
             const pos = (i + 1) * cellSize;
             
             // 垂直线
@@ -182,7 +184,7 @@ class GomokuGame {
 
     drawPiece(row, col, player) {
         const ctx = this.gameBoard.getContext('2d');
-        const cellSize = this.gameBoard.width / this.boardSize;
+        const cellSize = this.gameBoard.width / (this.boardSize + 1); // 与drawBoard保持一致
         const x = (col + 1) * cellSize;
         const y = (row + 1) * cellSize;
         const radius = cellSize * 0.4;
@@ -227,6 +229,11 @@ class GomokuGame {
         this.backToLoginBtn.addEventListener('click', () => {
             this.showScreen('login');
             this.resetGame();
+        });
+
+        // 等待界面返回大厅按钮
+        this.backToLobbyFromWaitingBtn.addEventListener('click', () => {
+            this.leaveRoom();
         });
 
         // 大厅相关按钮
@@ -339,6 +346,14 @@ class GomokuGame {
             this.username = data.username;
             this.currentUsernameSpan.textContent = this.username;
             this.enterLobby();
+        });
+
+        // 登录失败
+        this.socket.on('login-failed', (data) => {
+            alert(data.message);
+            // 清空输入框，让用户重新输入
+            this.usernameInput.value = '';
+            this.usernameInput.focus();
         });
 
         // 用户战绩数据
@@ -913,89 +928,6 @@ class GomokuGame {
         this.resultModal.classList.remove('active');
     }
 
-    showForbiddenMoveModal(reason) {
-        // 创建临时的禁手提示弹窗
-        const forbiddenModal = document.createElement('div');
-        forbiddenModal.className = 'forbidden-modal';
-        forbiddenModal.innerHTML = `
-            <div class="forbidden-content">
-                <div class="forbidden-icon">⚠️</div>
-                <div class="forbidden-title">落子无效</div>
-                <div class="forbidden-message">${reason}</div>
-            </div>
-        `;
-        
-        // 添加样式
-        forbiddenModal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 10000;
-            animation: fadeIn 0.3s ease;
-        `;
-        
-        const forbiddenContent = forbiddenModal.querySelector('.forbidden-content');
-        forbiddenContent.style.cssText = `
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-            animation: scaleIn 0.3s ease;
-        `;
-        
-        const forbiddenIcon = forbiddenModal.querySelector('.forbidden-icon');
-        forbiddenIcon.style.cssText = `
-            font-size: 48px;
-            margin-bottom: 15px;
-        `;
-        
-        const forbiddenTitle = forbiddenModal.querySelector('.forbidden-title');
-        forbiddenTitle.style.cssText = `
-            font-size: 24px;
-            font-weight: bold;
-            color: #e74c3c;
-            margin-bottom: 10px;
-        `;
-        
-        const forbiddenMessage = forbiddenModal.querySelector('.forbidden-message');
-        forbiddenMessage.style.cssText = `
-            font-size: 16px;
-            color: #666;
-        `;
-        
-        // 添加动画样式
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes fadeIn {
-                from { opacity: 0; }
-                to { opacity: 1; }
-            }
-            @keyframes scaleIn {
-                from { transform: scale(0.7); opacity: 0; }
-                to { transform: scale(1); opacity: 1; }
-            }
-        `;
-        document.head.appendChild(style);
-        
-        document.body.appendChild(forbiddenModal);
-        
-        // 1秒后自动隐藏
-        setTimeout(() => {
-            forbiddenModal.style.animation = 'fadeIn 0.3s ease reverse';
-            setTimeout(() => {
-                document.body.removeChild(forbiddenModal);
-                document.head.removeChild(style);
-            }, 300);
-        }, 1000);
-    }
-
     playAgain() {
         this.hideResultModal();
         // 发送重新开始请求给对方
@@ -1013,10 +945,13 @@ class GomokuGame {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         
-        const cellSize = this.gameBoard.width / this.boardSize;
-        const col = Math.floor((x - cellSize / 2) / cellSize);
-        const row = Math.floor((y - cellSize / 2) / cellSize);
+        const cellSize = this.gameBoard.width / (this.boardSize + 1); // 与drawBoard保持一致
         
+        // 坐标计算：找到最近的网格交叉点
+        const col = Math.round(x / cellSize) - 1;
+        const row = Math.round(y / cellSize) - 1;
+        
+        // 检查棋盘范围
         if (row >= 0 && row < this.boardSize && col >= 0 && col < this.boardSize) {
             this.socket.emit('make-move', { row, col });
         }
@@ -1114,7 +1049,7 @@ class GomokuGame {
     }
 
     showThreatMarkers(blockingPositions) {
-        const cellSize = this.gameBoard.width / this.boardSize;
+        const cellSize = this.gameBoard.width / (this.boardSize + 1); // 与drawBoard保持一致
         
         blockingPositions.forEach(position => {
             const marker = document.createElement('div');
@@ -1188,7 +1123,7 @@ class GomokuGame {
 
     // 显示最后一步落子标记
     showLastMoveMarker(row, col) {
-        const cellSize = this.gameBoard.width / this.boardSize;
+        const cellSize = this.gameBoard.width / (this.boardSize + 1); // 与drawBoard保持一致
         
         // 移除现有的最后一步标记
         this.clearLastMoveMarker();
@@ -1332,7 +1267,7 @@ class GomokuGame {
         // 根据排名获取称号
         if (rank === 1) return '棋圣';
         if (rank === 2) return '棋王';
-        if (rank === 3) return '神秘黑马';
+        if (rank === 3) return '黑马';
         
         // 根据段位获取称号
         if (score >= 1800) return '五子王者';
