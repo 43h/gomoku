@@ -36,19 +36,21 @@
                         <!-- 用户战绩显示 -->
                         <div class="user-stats-section">
                             <div id="user-stats" class="stats-display">
-                                <div class="stat-item score-row">
+                                <div class="stat-item">
                                     <span class="stat-label">积分:</span>
                                     <span id="user-score" class="stat-value">0</span>
                                 </div>
                                 <div class="stat-item">
-                                    <span class="stat-label">黑子:</span>
-                                    <span id="user-black-rate" class="stat-value">0%</span>
-                                    <span class="stat-games">(<span id="user-black-games">0</span>局)</span>
+                                    <span class="stat-label">总局数:</span>
+                                    <span id="user-total-games" class="stat-value">0</span>
                                 </div>
                                 <div class="stat-item">
-                                    <span class="stat-label">白子:</span>
+                                    <span class="stat-label">黑子胜率:</span>
+                                    <span id="user-black-rate" class="stat-value">0%</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">白子胜率:</span>
                                     <span id="user-white-rate" class="stat-value">0%</span>
-                                    <span class="stat-games">(<span id="user-white-games">0</span>局)</span>
                                 </div>
                             </div>
                         </div>
@@ -88,44 +90,10 @@
             </div>
         </div>
 
-        <!-- 创建房间界面 -->
-        <div id="create-room-screen" class="screen">
-            <div class="create-room-container">
-                <h2>创建房间</h2>
-                <div class="room-type-selection">
-                    <h3>选择房间类型</h3>
-                    <div class="room-type-options">
-                        <div class="room-type-option" data-type="novice">
-                            <div class="room-type-icon">🌱</div>
-                            <div class="room-type-title">新手房</div>
-                            <div class="room-type-description">
-                                <p>• 60秒落子时间限制</p>
-                                <p>• 无禁手规则</p>
-                                <p>• 适合新手练习</p>
-                            </div>
-                        </div>
-                        <div class="room-type-option" data-type="expert">
-                            <div class="room-type-icon">⚔️</div>
-                            <div class="room-type-title">高手房</div>
-                            <div class="room-type-description">
-                                <p>• 60秒落子时间限制</p>
-                                <p>• 完整禁手规则</p>
-                                <p>• 适合高手对战</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="create-room-actions">
-                    <button id="confirm-create-btn" class="btn primary" disabled>创建房间</button>
-                    <button id="cancel-create-btn" class="btn secondary">取消</button>
-                </div>
-            </div>
-        </div>
-
         <!-- 等待界面 -->
         <div id="waiting-screen" class="screen">
             <div class="waiting-room">
-                <h2>房间: <span id="current-room-id"></span><span id="room-type-display" class="room-type-badge"></span></h2>
+                <h2>房间: <span id="current-room-id"></span></h2>
                 <div class="players-info">
                     <div class="player-card">
                         <div class="avatar">👤</div>
@@ -177,7 +145,6 @@
                         </div>
                         <div class="game-status">
                             <div id="game-message">游戏进行中</div>
-                            <div id="room-rules-info" class="room-rules-info"></div>
                             <div class="game-stats">
                                 <div class="move-counter">
                                     第 <span id="move-count">0</span> 手
